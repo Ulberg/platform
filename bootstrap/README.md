@@ -12,6 +12,7 @@ Non-secret IDs live in [`config.env`](config.env). People live in [`../access/pe
 4. **Admin account** `…@<tenant>.onmicrosoft.com`, a cloud-only member account. Give it Global Administrator.
    - **Set its usage location (Norway)** under Properties → Settings, otherwise license assignment fails.
    - **Global Admin gives no access to subscriptions.** As the owner, grant the admin **Owner** on the subscription (subscription → Access control (IAM)).
+   - When adding that Owner assignment, choose **"Allow user to assign all roles"** or remove the condition. The default condition blocks granting privileged roles, and the bootstrap has to grant *Role Based Access Control Administrator*. After changing it, Azure can take ~3–5 minutes before it applies.
 5. **Passkeys:** enable *Passkey (FIDO2)* and *Temporary Access Pass* under Entra → Authentication methods → Policies.
    - Owner account: account.microsoft.com → Security → add a passkey/security key, turn on two-step verification, and store the recovery code offline.
    - Admin account: mysignins.microsoft.com/security-info → add a passkey, with Authenticator as backup.
@@ -31,7 +32,7 @@ Non-secret IDs live in [`config.env`](config.env). People live in [`../access/pe
 
 All apps have webhooks off and can only be installed on this account. The keys were piped from 1Password straight into `gh secret set` and never printed. Rotate them every 6 months.
 
-## Part C: run the bootstrap script
+## Part C: run the bootstrap script (done 2026-11-08)
 
 ```bash
 az login --tenant e17ac17e-d8cd-4280-a4e5-94ad2bb85549   # as the admin account
@@ -55,5 +56,7 @@ There are no client secrets anywhere: both identities sign in with GitHub's OIDC
 **Be aware:** `id-platform-apply` can manage groups, apps, PIM and Conditional Access, which makes it effectively a tenant admin. The protection is that only a run in the `dev` environment, which needs a platform lead's approval and only deploys from `main`, can get a token for it.
 
 The admin account also gets standing *Storage Blob Data Contributor* on the state account and *Key Vault Crypto Officer* on the vault, so it can create the container and key. Pulumi moves these to PIM-eligible later.
+
+Verified after the run: `pulumi login azblob://pulumi?storage_account=stplatform21784576` works with Entra sign-in only (no storage keys).
 
 The External ID tenant's CI identity is created in Phase 3, when we first manage resources there.
