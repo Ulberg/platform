@@ -6,6 +6,7 @@
 people:
   endre:
     github: Ulberg
+    entra: 19d54064-9c11-4c17-8b66-dee39703a3e2   # object ID of the admin account (not a secret)
 
 # Standing access is read-only. See PLAN.md §5.1 in Ulberg/todo.
 groups:
