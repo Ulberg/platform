@@ -42,8 +42,12 @@ log "Registering resource providers"
 for ns in Microsoft.ContainerService Microsoft.DBforPostgreSQL Microsoft.KeyVault Microsoft.ContainerRegistry \
           Microsoft.Network Microsoft.OperationalInsights Microsoft.Insights Microsoft.ManagedIdentity \
           Microsoft.Storage Microsoft.AzureActiveDirectory; do
-  az provider register --namespace "$ns" -o none
+  az provider register --namespace "$ns" -o none 2>/dev/null
   echo "  $ns"
+done
+echo "  waiting for the providers the bootstrap needs right now"
+for ns in Microsoft.Storage Microsoft.KeyVault Microsoft.ManagedIdentity; do
+  until [ "$(az provider show -n "$ns" --query registrationState -o tsv)" = "Registered" ]; do sleep 10; done
 done
 
 # --- state storage --------------------------------------------------------------
@@ -52,7 +56,7 @@ az group create -n "$STATE_RESOURCE_GROUP" -l "$LOCATION" -o none
 if ! az storage account show -n "$STATE_STORAGE_ACCOUNT" -g "$STATE_RESOURCE_GROUP" -o none 2>/dev/null; then
   az storage account create -n "$STATE_STORAGE_ACCOUNT" -g "$STATE_RESOURCE_GROUP" -l "$LOCATION" \
     --sku Standard_ZRS --kind StorageV2 --min-tls-version TLS1_2 --https-only true \
-    --allow-blob-public-access false --allow-shared-key-access false --default-to-oauth-authentication true -o none
+    --allow-blob-public-access false --allow-shared-key-access false -o none
 fi
 STORAGE_ID=$(az storage account show -n "$STATE_STORAGE_ACCOUNT" -g "$STATE_RESOURCE_GROUP" --query id -o tsv)
 az storage account blob-service-properties update --account-name "$STATE_STORAGE_ACCOUNT" -g "$STATE_RESOURCE_GROUP" \
