@@ -1,0 +1,18 @@
+# Who may do what. This file is the only source of truth for access.
+# Pulumi renders it into Entra groups (read ⊂ write ⊂ admin, write/admin via PIM),
+# GitHub rulesets + CODEOWNERS, Kubernetes RBAC and Grafana org membership.
+# Changes need approval from a platform lead.
+
+people:
+  endre:
+    github: Ulberg
+
+# Standing access is read-only. See PLAN.md §5.1 in Ulberg/todo.
+groups:
+  infra-developers: [endre]   # Azure/K8s/DB read, infra + app telemetry; eligible for break-glass
+  app-developers: [endre]     # app logs, metrics and traces only
+
+# The only people who may approve and merge in each repo.
+repo-leads:
+  platform: [endre]
+  todo: [endre]

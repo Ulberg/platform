@@ -1,0 +1,48 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  GITLEAKS_VERSION: 8.21.2
+
+jobs:
+  secret-scan:
+    name: secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install gitleaks (checksum verified)
+        run: |
+          base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfLO "$base/$tarball"
+          curl -sSfL "$base/gitleaks_${GITLEAKS_VERSION}_checksums.txt" | grep " $tarball\$" | sha256sum --check
+          tar -xzf "$tarball" gitleaks
+      - name: Scan full history
+        run: ./gitleaks git --redact --verbose .
+
+  prompt-log:
+    name: prompt log
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check .prompts/ format
+        run: python3 .github/scripts/check_prompt_log.py
+      - name: Test the prompt-log hook
+        run: python3 .claude/hooks/test_prompt_log.py
+
+  access:
+    name: access definitions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check access/people.yaml
+        run: .github/scripts/check_access.sh

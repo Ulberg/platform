@@ -21,7 +21,9 @@ Rules:
   session: <session id or "unknown">
   ```
 
-- Write the user prompt file when you receive a prompt and the assistant file when you give the final reply for that prompt. If a turn is skipped, add it later instead of leaving a gap.
+- **Claude Code writes the log automatically** with the hooks in `.claude/settings.json` (`.claude/hooks/prompt_log.py`). Don't also write it by hand in a Claude Code session, or the turn gets logged twice.
+- Other agents and tools without these hooks must write the files themselves: the user prompt file when they receive a prompt, the assistant file when they give the final reply. If a turn is skipped, add it later instead of leaving a gap.
+- CI checks the format (`.github/scripts/check_prompt_log.py`).
 - Never put secrets, tokens or credentials in a prompt file. If a prompt contains one, redact it as `[REDACTED]` and tell the user.
 
 ## 2. Infrastructure- and AI-first
