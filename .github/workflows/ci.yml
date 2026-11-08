@@ -16,7 +16,7 @@ jobs:
     name: secret scan (gitleaks)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Install gitleaks (checksum verified)
@@ -33,7 +33,7 @@ jobs:
     name: prompt log
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Check .prompts/ format
         run: python3 .github/scripts/check_prompt_log.py
       - name: Test the prompt-log hook
@@ -43,6 +43,6 @@ jobs:
     name: access definitions
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Check access/people.yaml
         run: .github/scripts/check_access.sh
