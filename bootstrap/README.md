@@ -24,11 +24,13 @@ Non-secret IDs live in [`config.env`](config.env). People live in [`../access/pe
 
 ## Part B: GitHub (done 2026-11-08)
 
-| App | ID | Installed on | Key stored as |
-|---|---|---|---|
-| `ulberg-platform-admin` | 5672546 | todo, platform | `PLATFORM_ADMIN_APP_KEY`, environment `dev` (platform) |
-| `ulberg-platform-reader` | 5672559 | todo, platform | `PLATFORM_READER_APP_KEY`, repo (platform) |
-| `ulberg-platform-pr-bot` | 5672567 | platform | `PR_BOT_APP_KEY`, environment `release` (todo) |
+| App | App ID | Client ID (variable) | Installed on | Key stored as |
+|---|---|---|---|---|
+| `ulberg-platform-admin` | 5672546 | `Iv23liIrII6c7xBXsDCF` (`PLATFORM_ADMIN_APP_CLIENT_ID`, env `dev`) | todo, platform | `PLATFORM_ADMIN_APP_KEY`, environment `dev` (platform) |
+| `ulberg-platform-reader` | 5672559 | `Iv23li5cUHIvETFLhpQ3` (`PLATFORM_READER_APP_CLIENT_ID`, repo) | todo, platform | `PLATFORM_READER_APP_KEY`, repo (platform) |
+| `ulberg-platform-pr-bot` | 5672567 | `Iv23liDYEGcAtYI2ncRf` (`PR_BOT_APP_CLIENT_ID`, env `release` in todo) | platform | `PR_BOT_APP_KEY`, environment `release` (todo) |
+
+Workflows identify the apps by **client ID** (`actions/create-github-app-token` v3 deprecates app IDs).
 
 All apps have webhooks off and can only be installed on this account. The keys were piped from 1Password straight into `gh secret set` and never printed. Rotate them every 6 months.
 
