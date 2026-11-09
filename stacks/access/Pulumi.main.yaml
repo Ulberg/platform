@@ -7,3 +7,4 @@ config:
   github:owner: Ulberg
   # off | report-only | on. Stays off while security defaults are on (they can't coexist with CA policies).
   access:conditionalAccess: "on"
+  access:tenantDomain: adminazurestubble162simplel.onmicrosoft.com

@@ -7,7 +7,8 @@ open Platform.Access.Desired
 open Platform.Access.Tests.Fixtures
 
 let private planWith caState =
-    Desired.plan (github "owner-gh") caState alertEmails (parsed valid) |> ok
+    Desired.plan (github "owner-gh") caState alertEmails "example.onmicrosoft.com" (parsed valid)
+    |> ok
 
 let private keys (people: Person list) = people |> List.map Person.key
 
@@ -22,7 +23,8 @@ let tests =
                     |> List.choose (fun m ->
                         match m.includes with
                         | Member.Group inner -> Some(m.group, inner)
-                        | Member.Person _ -> None)
+                        | Member.Person _
+                        | Member.Agent _ -> None)
 
                 Expect.equal
                     nesting
@@ -40,6 +42,7 @@ let tests =
                     |> List.choose (fun m ->
                         match m.includes with
                         | Member.Person p -> Some(GroupName.value m.group, Person.key p)
+                        | Member.Agent _
                         | Member.Group _ -> None)
 
                 Expect.equal
@@ -75,6 +78,10 @@ let tests =
                     roles
                     [
                         "platform-read", Reader
+                        "platform-agents", Reader
+                        "platform-agents", MonitoringReader
+                        "platform-agents", LogAnalyticsReader
+                        "platform-agents", CostManagementReader
                         "33333333-3333-3333-3333-333333333333", Owner
                         "44444444-4444-4444-4444-444444444444", Owner
                     ]
@@ -128,7 +135,7 @@ let tests =
                         })
                     "CA06"
 
-                Expect.equal (find "CA06").users (Groups [ InfraDevelopers ]) "CA06 users"
+                Expect.equal (find "CA06").users (Groups [ InfraDevelopers; PlatformAgents ]) "CA06 users"
 
                 Expect.equal
                     (find "CA08").controls
@@ -139,7 +146,7 @@ let tests =
                         })
                     "CA08: infra developers never stay signed in"
 
-                Expect.equal (find "CA08").users (Groups [ InfraDevelopers ]) "CA08 users"
+                Expect.equal (find "CA08").users (Groups [ InfraDevelopers; PlatformAgents ]) "CA08 users"
                 Expect.equal (find "CA09").users Guests "CA09: guests"
                 Expect.equal (find "CA03").users Members "CA03: members only, so guests keep billing"
 
@@ -161,7 +168,10 @@ let tests =
                         })
                     "CA07"
 
-                Expect.equal (find "CA07").users (Groups [ InfraDevelopers; AppDevelopers ]) "CA07 users"
+                Expect.equal
+                    (find "CA07").users
+                    (Groups [ InfraDevelopers; AppDevelopers; PlatformAgents ])
+                    "CA07 users"
             }
 
             test "\"never stay signed in\" is only used on policies for all apps (Entra rejects it otherwise)" {
@@ -208,8 +218,44 @@ let tests =
                     "no browser mode"
             }
 
+            test "Claude's agent (D41): its own account and group, read roles only, never PIM-eligible" {
+                let plan = planWith (Some Enforced)
+                Expect.equal (plan.agents |> List.map Agent.key) [ "ann-agent" ] "one agent, for ann"
+
+                let agentGroups =
+                    plan.memberships
+                    |> List.choose (fun m ->
+                        match m.includes with
+                        | Member.Agent a -> Some(GroupName.value m.group, Agent.key a)
+                        | Member.Person _
+                        | Member.Group _ -> None)
+
+                Expect.equal agentGroups [ "platform-agents", "ann-agent" ] "only in platform-agents"
+
+                Expect.isFalse
+                    (plan.memberships
+                     |> List.exists (fun m -> m.includes = Member.Group PlatformAgents))
+                    "platform-agents is nested in nothing, so it never inherits PIM groups"
+
+                let agentRoles =
+                    plan.roleAssignments
+                    |> List.filter (fun g -> g.grantee = Grantee.Group PlatformAgents)
+                    |> List.map _.role
+
+                Expect.equal agentRoles AzureRole.agentRoles "read roles only"
+
+                Expect.equal
+                    (plan.agentDirectoryRoles |> List.map (fun r -> Agent.key r.agent, r.role))
+                    [ "ann-agent", SecurityReader ]
+                    "Security Reader for sign-in and audit logs"
+
+                Expect.equal plan.tenantDomain "example.onmicrosoft.com" "user names live in the tenant domain"
+            }
+
             test "the owner is never added as a collaborator" {
-                let plan = Desired.plan (github "Ann-GH") None alertEmails (parsed valid) |> ok
+                let plan =
+                    Desired.plan (github "Ann-GH") None alertEmails "example.onmicrosoft.com" (parsed valid)
+                    |> ok
 
                 let collaborators =
                     plan.collaborators
@@ -220,7 +266,10 @@ let tests =
 
             test "a repo without required checks is an error, not a ruleset without checks" {
                 let yaml = valid.Replace("todo: [ann, bob]", "todo: [ann, bob]\n  other: [ann]")
-                let plan = Desired.plan (github "owner-gh") None alertEmails (parsed yaml)
+
+                let plan =
+                    Desired.plan (github "owner-gh") None alertEmails "example.onmicrosoft.com" (parsed yaml)
+
                 Expect.equal plan (Error [ "no required checks defined for repo 'other'" ]) "missing checks"
             }
 

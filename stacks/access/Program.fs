@@ -58,7 +58,13 @@ let private run () =
                     |> Result.mapError List.singleton
 
                 let! emails = Email.parseList "PLATFORM_ALERT_EMAILS" alertEmails
-                let! plan = Desired.plan owner caState emails access
+
+                let! tenantDomain =
+                    config.Require "tenantDomain"
+                    |> Parse.notEmpty "access:tenantDomain"
+                    |> Result.mapError List.singleton
+
+                let! plan = Desired.plan owner caState emails tenantDomain access
                 return access, plan
             }
 
@@ -90,7 +96,8 @@ let private run () =
                     + $"{entra.directoryRoleEligibilities.Length} PIM directory-role eligibilities "
                     + $"({entra.directoryRolePolicies.Length} PIM policies), {roles.Length} Azure role assignments, "
                     + $"{entra.conditionalAccess.Length + entra.contextPolicies.Length} Conditional Access policies, {github.rulesets.Length} rulesets, "
-                    + $"{github.collaborators.Length} collaborators, {github.environments.Length} environments"
+                    + $"{github.collaborators.Length} collaborators, {github.environments.Length} environments, "
+                    + $"{entra.agents.Length} agent accounts"
                 )
 
                 return

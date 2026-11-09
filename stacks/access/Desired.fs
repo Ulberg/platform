@@ -18,10 +18,19 @@ type GroupName =
     | PlatformWrite
     /// Admin. Only reachable by activating PIM, platform leads only.
     | PlatformAdmin
+    /// Claude's agent accounts (D41): read roles only, never PIM-eligible.
+    | PlatformAgents
 
 module GroupName =
     let all =
-        [ InfraDevelopers; AppDevelopers; PlatformRead; PlatformWrite; PlatformAdmin ]
+        [
+            InfraDevelopers
+            AppDevelopers
+            PlatformRead
+            PlatformWrite
+            PlatformAdmin
+            PlatformAgents
+        ]
 
     let value =
         function
@@ -30,6 +39,7 @@ module GroupName =
         | PlatformRead -> "platform-read"
         | PlatformWrite -> "platform-write"
         | PlatformAdmin -> "platform-admin"
+        | PlatformAgents -> "platform-agents"
 
     let description =
         function
@@ -38,10 +48,24 @@ module GroupName =
         | PlatformRead -> "Read on Azure, AKS and the DB. Contains platform-write."
         | PlatformWrite -> "Break-glass write. PIM only (max 2 h). Contains platform-admin."
         | PlatformAdmin -> "Platform admin. PIM only (max 1 h), platform leads only."
+        | PlatformAgents -> "Claude's agent accounts (access/people.yaml agents). Read only, never PIM-eligible."
+
+/// Claude's own Entra account for one developer (D41). It reads what that developer can read day to day,
+/// never holds or activates anything privileged, and its sign-ins show up separately in the audit logs.
+type Agent = { owner: Person }
+
+module Agent =
+    /// e.g. "endre-agent"; also the account's user name.
+    let key (a: Agent) = $"{Person.key a.owner}-agent"
+
+    /// e.g. "Claude agent of endre (Ulberg)", so every log line names the person it acts for.
+    let displayName (a: Agent) =
+        $"Claude agent of {Person.key a.owner} ({GitHubHandle.value a.owner.github})"
 
 [<RequireQualifiedAccess>]
 type Member =
     | Person of Person
+    | Agent of Agent
     | Group of GroupName
 
 type Membership = { group: GroupName; includes: Member }
@@ -51,6 +75,7 @@ module Membership =
     let resourceName m =
         match m.includes with
         | Member.Person p -> $"{GroupName.value m.group}-{Person.key p}"
+        | Member.Agent a -> $"{GroupName.value m.group}-{Agent.key a}"
         | Member.Group inner -> $"{GroupName.value inner}-in-{GroupName.value m.group}"
 
 /// What PIM asks for at activation, besides a justification.
@@ -75,19 +100,27 @@ type PimRule =
 // ---------------------------------------------------------------------------------------------
 // Entra directory roles
 
-/// Built-in Entra roles that nobody holds standing (D35). Only the emergency accounts keep a
-/// standing Global Admin, and those are set up by hand, not here.
-type DirectoryRole = | GlobalAdministrator
+/// Built-in Entra roles we assign. Nobody holds Global Admin standing (D35); only the emergency accounts
+/// keep it, and those are set up by hand, not here.
+type DirectoryRole =
+    | GlobalAdministrator
+    /// Read-only: sign-in and audit logs, Conditional Access and security settings.
+    | SecurityReader
 
 module DirectoryRole =
     let value =
         function
         | GlobalAdministrator -> "global-administrator"
+        | SecurityReader -> "security-reader"
 
     /// Built-in role template ID, the same in every tenant.
     let templateId =
         function
         | GlobalAdministrator -> "62e90394-69f5-4237-9190-012177145e10"
+        | SecurityReader -> "5d6b6bb7-de71-4623-b4af-96380a352509"
+
+/// A standing, read-only directory role for an agent account.
+type AgentDirectoryRole = { agent: Agent; role: DirectoryRole }
 
 /// PIM for a directory role: eligible only, activated with `activation` + justification for at most `maxHours`.
 type DirectoryRolePim =
@@ -103,13 +136,24 @@ type DirectoryRolePim =
 
 type AzureRole =
     | Reader
+    | MonitoringReader
+    | LogAnalyticsReader
+    | CostManagementReader
     | Owner
 
 module AzureRole =
     let definitionId =
         function
         | Reader -> "acdd72a7-3385-48ef-bd42-f606fba81ae7"
+        | MonitoringReader -> "43d0d8ad-25c7-4714-9337-8ba259a9fe05"
+        | LogAnalyticsReader -> "73c42c96-874c-492b-b04d-ab87d138a893"
+        | CostManagementReader -> "72fafb9e-0641-4937-9268-a91bfd8191a3"
         | Owner -> "8e3af657-a8ff-443c-a75c-2fe8c4bcb635"
+
+    /// What Claude's agent accounts get on the subscription (D41): everything a platform developer reads
+    /// day to day, and nothing that writes or reads data (no state, no secrets).
+    let agentRoles =
+        [ Reader; MonitoringReader; LogAnalyticsReader; CostManagementReader ]
 
 [<RequireQualifiedAccess>]
 type Grantee =
@@ -229,7 +273,7 @@ let private conditionalAccess (state: CaState option) (access: Access) =
                 "CA04 Risky sign-ins by infra developers need MFA"
                 [ "all" ]
                 (Apps [ "All" ])
-                (Groups [ InfraDevelopers ])
+                (Groups [ InfraDevelopers; PlatformAgents ])
                 [ "medium"; "high" ]
                 (Grant RequireMfa)
             // D39: PIM asks for this context, so every activation needs a fresh passkey sign-in.
@@ -250,7 +294,7 @@ let private conditionalAccess (state: CaState option) (access: Access) =
                 "CA06 Infra developers sign in to Azure management every 4 h"
                 [ "all" ]
                 (Apps [ azureManagementApp ])
-                (Groups [ InfraDevelopers ])
+                (Groups [ InfraDevelopers; PlatformAgents ])
                 []
                 (Session
                     {
@@ -261,7 +305,7 @@ let private conditionalAccess (state: CaState option) (access: Access) =
                 "CA07 Developers sign in every 12 h"
                 [ "all" ]
                 (Apps [ "All" ])
-                (Groups [ InfraDevelopers; AppDevelopers ])
+                (Groups [ InfraDevelopers; AppDevelopers; PlatformAgents ])
                 []
                 (Session
                     {
@@ -285,7 +329,7 @@ let private conditionalAccess (state: CaState option) (access: Access) =
                 "CA08 Infra developers never stay signed in"
                 [ "all" ]
                 (Apps [ "All" ])
-                (Groups [ InfraDevelopers ])
+                (Groups [ InfraDevelopers; PlatformAgents ])
                 []
                 (Session
                     {
@@ -349,6 +393,10 @@ type Plan =
         environments: Environment list
         /// Who gets PIM emails: every activation and every new assignment of a privileged role (D40).
         alertEmails: Email list
+        /// Claude's agent accounts (D41) and the tenant domain their user names live in.
+        agents: Agent list
+        agentDirectoryRoles: AgentDirectoryRole list
+        tenantDomain: string
     }
 
 let private memberships (access: Access) =
@@ -360,8 +408,17 @@ let private memberships (access: Access) =
                 includes = Member.Person p
             })
 
+    let agents =
+        access.agents
+        |> List.map (fun p ->
+            {
+                group = PlatformAgents
+                includes = Member.Agent { owner = p }
+            })
+
     people InfraDevelopers access.infraDevelopers
     @ people AppDevelopers access.appDevelopers
+    @ agents
     // read ⊃ write ⊃ admin, so each consumer only maps three levels.
     @ [
         {
@@ -407,6 +464,7 @@ let plan
     (owner: GitHubHandle)
     (caState: CaState option)
     (alertEmails: Email list)
+    (tenantDomain: string)
     (access: Access)
     : Result<Plan, string list> =
 
@@ -457,6 +515,13 @@ let plan
                         role = Reader
                     }
                     :: [
+                        for role in AzureRole.agentRoles ->
+                            {
+                                grantee = Grantee.Group PlatformAgents
+                                role = role
+                            }
+                    ]
+                    @ [
                         for id in access.emergencyAccess ->
                             {
                                 grantee = Grantee.EmergencyAccount id
@@ -483,5 +548,15 @@ let plan
                         }
                     ]
                 alertEmails = alertEmails
+                agents = access.agents |> List.map (fun p -> { owner = p })
+                agentDirectoryRoles =
+                    [
+                        for p in access.agents ->
+                            {
+                                agent = { owner = p }
+                                role = SecurityReader
+                            }
+                    ]
+                tenantDomain = tenantDomain
             }
     }
