@@ -1,40 +1,33 @@
-/// GitHub repo rules, environments and collaborators for every repo in repo-leads (PLAN.md §2).
+/// Turns the GitHub part of a Desired.Plan into rulesets, collaborators and environments, and reads
+/// each repo's CODEOWNERS for the check in Codeowners.fs. No decisions are made here.
 module Platform.Access.GitHub
 
 open System.IO
 open System.Threading.Tasks
 open Pulumi
+open Pulumi.FSharp
 open Pulumi.Github
 open Pulumi.Github.Inputs
 open Platform.Access.People
+open Platform.Access.Desired
+
+type Deployed =
+    {
+        rulesets: RepositoryRuleset list
+        collaborators: RepositoryCollaborator list
+        environments: (RepositoryEnvironment * RepositoryEnvironmentDeploymentPolicy) list
+    }
 
 /// GitHub Actions' app ID, so a required check can only be satisfied by our own workflows.
 let private githubActions = 15368
-
-/// Status checks (job names) a PR must pass, per repo.
-let private requiredChecks =
-    Map
-        [
-            "platform",
-            [
-                "secret scan (gitleaks)"
-                "prompt log"
-                "dotnet (format, build, test)"
-                "pulumi preview"
-            ]
-            "todo", [ "secret scan (gitleaks)"; "prompt log" ]
-        ]
 
 /// D34, the solo-developer exception: repo admins (only the owner, Ulberg) may bypass the rules,
 /// so they can push straight to main. No app gets a bypass. See the TODO in PLAN.md §13.
 let private ownerBypass =
     RepositoryRulesetBypassActorArgs(ActorId = 5, ActorType = "RepositoryRole", BypassMode = "always")
 
-let private ruleset (repo: string) =
-    let checks =
-        requiredChecks
-        |> Map.tryFind repo
-        |> Option.defaultWith (fun () -> failwith $"No required checks defined for repo '{repo}'")
+let private ruleset (r: Ruleset) =
+    let repo = RepoName.value r.repo
 
     RepositoryRuleset(
         $"{repo}-main",
@@ -47,11 +40,11 @@ let private ruleset (repo: string) =
                 RepositoryRulesetConditionsArgs(
                     RefName =
                         RepositoryRulesetConditionsRefNameArgs(
-                            Includes = InputList.op_Implicit [| "~DEFAULT_BRANCH" |],
-                            Excludes = InputList<string>()
+                            Includes = inputList [ input "~DEFAULT_BRANCH" ],
+                            Excludes = inputList []
                         )
                 ),
-            BypassActors = InputList.op_Implicit [| ownerBypass |],
+            BypassActors = inputList [ input ownerBypass ],
             Rules =
                 RepositoryRulesetRulesArgs(
                     Deletion = true,
@@ -68,54 +61,59 @@ let private ruleset (repo: string) =
                         RepositoryRulesetRulesRequiredStatusChecksArgs(
                             StrictRequiredStatusChecksPolicy = false,
                             RequiredChecks =
-                                InputList.op_Implicit (
-                                    [|
-                                        for c in checks ->
-                                            RepositoryRulesetRulesRequiredStatusChecksRequiredCheckArgs(
-                                                Context = c,
-                                                IntegrationId = githubActions
+                                inputList
+                                    [
+                                        for c in r.requiredChecks ->
+                                            input (
+                                                RepositoryRulesetRulesRequiredStatusChecksRequiredCheckArgs(
+                                                    Context = c,
+                                                    IntegrationId = githubActions
+                                                )
                                             )
-                                    |]
-                                )
+                                    ]
                         )
                 )
         )
     )
-    |> ignore
 
-let private collaborators (owner: GitHubHandle) (repo: string) (people: Person list) =
-    for p in
-        people
-        |> List.distinct
-        |> List.filter (fun p -> not (GitHubHandle.same p.github owner)) do
-        RepositoryCollaborator(
-            $"{repo}-{Person.key p}",
-            RepositoryCollaboratorArgs(Repository = repo, Username = GitHubHandle.value p.github, Permission = "push")
+let private collaborator (c: Collaborator) =
+    let repo = RepoName.value c.repo
+
+    RepositoryCollaborator(
+        $"{repo}-{Person.key c.person}",
+        RepositoryCollaboratorArgs(
+            Repository = repo,
+            Username = GitHubHandle.value c.person.github,
+            Permission = "push"
         )
-        |> ignore
+    )
 
 /// An existing environment, managed in place (PUT is an upsert). Protected, because deleting
 /// an environment also deletes its secrets.
-let private environment (repo: string) (name: string) (branchPolicyId: int) (reviewers: Person list) =
-    let reviewerIds =
-        reviewers
-        |> List.map (fun p ->
-            GetUser.Invoke(GetUserInvokeArgs(Username = GitHubHandle.value p.github)).Apply(fun u -> int u.Id))
-        |> Output.All
+let private environment (e: Environment) =
+    let repo = RepoName.value e.repo
+
+    let reviewers =
+        match e.reviewers with
+        | [] -> inputList []
+        | people ->
+            let ids =
+                people
+                |> List.map (fun p ->
+                    GetUser.Invoke(GetUserInvokeArgs(Username = GitHubHandle.value p.github)).Apply(fun u -> int u.Id))
+                |> Output.All
+
+            inputList [ input (RepositoryEnvironmentReviewerArgs(Users = ids)) ]
 
     let env =
         RepositoryEnvironment(
-            $"{repo}-{name}",
+            $"{repo}-{e.name}",
             RepositoryEnvironmentArgs(
                 Repository = repo,
-                Environment = name,
+                Environment = e.name,
                 PreventSelfReview = false,
                 CanAdminsBypass = false,
-                Reviewers =
-                    (if List.isEmpty reviewers then
-                         InputList<RepositoryEnvironmentReviewerArgs>()
-                     else
-                         InputList.op_Implicit [| RepositoryEnvironmentReviewerArgs(Users = reviewerIds) |]),
+                Reviewers = reviewers,
                 DeploymentBranchPolicy =
                     RepositoryEnvironmentDeploymentBranchPolicyArgs(
                         ProtectedBranches = false,
@@ -125,69 +123,52 @@ let private environment (repo: string) (name: string) (branchPolicyId: int) (rev
             CustomResourceOptions(Protect = true, RetainOnDelete = true)
         )
 
-    RepositoryEnvironmentDeploymentPolicy(
-        $"{repo}-{name}-main",
-        RepositoryEnvironmentDeploymentPolicyArgs(Repository = repo, Environment = name, BranchPattern = "main"),
-        CustomResourceOptions(
-            ImportId = $"{repo}:{name}:{branchPolicyId}",
-            DependsOn = InputList.op_Implicit (env :> Resource),
-            Protect = true,
-            RetainOnDelete = true
+    let branchPolicy =
+        RepositoryEnvironmentDeploymentPolicy(
+            $"{repo}-{e.name}-main",
+            RepositoryEnvironmentDeploymentPolicyArgs(Repository = repo, Environment = e.name, BranchPattern = "main"),
+            CustomResourceOptions(
+                ImportId = $"{repo}:{e.name}:{e.branchPolicyId}",
+                DependsOn = InputList.op_Implicit (env :> Resource),
+                Protect = true,
+                RetainOnDelete = true
+            )
         )
-    )
-    |> ignore
 
-let repos (owner: GitHubHandle) (access: Access) =
-    for KeyValue(name, leads) in access.repoLeads do
-        let repo = RepoName.value name
-        ruleset repo
+    env, branchPolicy
 
-        let developers =
-            if name = RepoName.platform then
-                access.infraDevelopers
-            else
-                access.infraDevelopers @ access.appDevelopers
-
-        collaborators owner repo (leads @ developers)
-
-    // Applies need a platform lead's approval; app releases (the pr-bot) run from main only.
-    environment "platform" "dev" 65981291 access.platformLeads
-    environment "todo" "release" 65981293 []
-
-/// Fails the run if a repo's CODEOWNERS doesn't match its leads. Committed files rather than a bot push,
-/// because a bot pushing to main would need a ruleset bypass. The platform repo is read from the
-/// checkout, so a PR that changes leads must change CODEOWNERS in the same PR.
-let checkCodeowners (platformRoot: string) (access: Access) : Task<unit> =
-    task {
-        let mutable errors = []
-
-        for KeyValue(name, leads) in access.repoLeads do
-            let repo = RepoName.value name
-            let expected = codeowners leads
-
-            let! actual =
-                if name = RepoName.platform then
-                    Task.FromResult(Some(File.ReadAllText(Path.Combine(platformRoot, ".github", "CODEOWNERS"))))
-                else
-                    task {
-                        try
-                            let! file =
-                                GetRepositoryFile.InvokeAsync(
-                                    GetRepositoryFileArgs(
-                                        Repository = repo,
-                                        File = ".github/CODEOWNERS",
-                                        Branch = "main"
-                                    )
-                                )
-
-                            return Some file.Content
-                        with _ ->
-                            return None
-                    }
-
-            if actual <> Some expected then
-                errors <- $"{repo}: .github/CODEOWNERS must be exactly:\n{expected}" :: errors
-
-        if not (List.isEmpty errors) then
-            failwith (String.concat "\n" errors)
+let deploy (plan: Plan) : Deployed =
+    {
+        rulesets = plan.rulesets |> List.map ruleset
+        collaborators = plan.collaborators |> List.map collaborator
+        environments = plan.environments |> List.map environment
     }
+
+/// Reads a repo's committed CODEOWNERS. The platform repo is read from the checkout, so a PR that
+/// changes leads must change CODEOWNERS in the same PR; other repos are read from their `main`.
+let readCodeowners (platformRoot: string) (repo: RepoName) : Task<string option> =
+    if repo = RepoName.platform then
+        let path = Path.Combine(platformRoot, ".github", "CODEOWNERS")
+
+        Task.FromResult(
+            if File.Exists path then
+                Some(File.ReadAllText path)
+            else
+                None
+        )
+    else
+        task {
+            try
+                let! file =
+                    GetRepositoryFile.InvokeAsync(
+                        GetRepositoryFileArgs(
+                            Repository = RepoName.value repo,
+                            File = ".github/CODEOWNERS",
+                            Branch = "main"
+                        )
+                    )
+
+                return Some file.Content
+            with _ ->
+                return None
+        }

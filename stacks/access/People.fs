@@ -4,12 +4,11 @@
 module Platform.Access.People
 
 open System
-open System.Collections.Generic
 open System.IO
 open System.Text.RegularExpressions
 open FsToolkit.ErrorHandling
 open FsToolkit.ErrorHandling.Operator.Validation
-open YamlDotNet.Serialization
+open System.Text.Json.Serialization
 
 // ---------------------------------------------------------------------------------------------
 // Domain
@@ -99,24 +98,22 @@ module Access =
         }
 
 // ---------------------------------------------------------------------------------------------
-// DTO: the file exactly as written. Anything can be missing, so every field is nullable.
+// DTO: the file exactly as written. Anything can be missing, so every field is an option.
 
-[<CLIMutable>]
 type PersonDto =
     {
-        github: string | null
-        entra: string | null
+        github: string option
+        entra: string option
     }
 
-[<CLIMutable>]
 type PeopleFileDto =
     {
-        people: Dictionary<string, PersonDto> | null
-        groups: Dictionary<string, string array | null> | null
-        [<YamlMember(Alias = "repo-leads")>]
-        repoLeads: Dictionary<string, string array | null> | null
-        [<YamlMember(Alias = "emergency-access")>]
-        emergencyAccess: string array | null
+        people: Map<string, PersonDto option> option
+        groups: Map<string, string list option> option
+        [<JsonPropertyName("repo-leads")>]
+        repoLeads: Map<string, string list option> option
+        [<JsonPropertyName("emergency-access")>]
+        emergencyAccess: string list option
     }
 
 // ---------------------------------------------------------------------------------------------
@@ -125,13 +122,13 @@ type PeopleFileDto =
 let private infraDevelopers = "infra-developers"
 let private appDevelopers = "app-developers"
 
-let private person (KeyValue(key: string, dto: PersonDto)) : Validation<Person, string> =
-    match box dto with
-    | null -> Validation.error $"people.{key}: needs 'github' and 'entra'"
-    | _ ->
+let private person (key: string, dto: PersonDto option) : Validation<Person, string> =
+    match dto with
+    | None -> Validation.error $"people.{key}: needs 'github' and 'entra'"
+    | Some dto ->
         Person.create <!^> PersonKey.parse key
-        <*^> GitHubHandle.parse dto.github
-        <*^> EntraObjectId.parse "entra" dto.entra
+        <*^> (Parse.required "github" dto.github |> Result.bind GitHubHandle.parse)
+        <*^> (Parse.required "entra" dto.entra |> Result.bind (EntraObjectId.parse "entra"))
         |> Parse.within $"people.{key}"
 
 let private uniqueGitHub (people: Person list) : Validation<unit, string> =
@@ -148,38 +145,35 @@ let private uniqueGitHub (people: Person list) : Validation<unit, string> =
             ]
 
 /// Names → people. Every name must be defined under `people`, and the list can't be empty.
-let private resolve (people: Person list) (context: string) (names: string array | null) =
+let private resolve (people: Person list) (context: string) (names: string list option) =
     let find name =
         people
         |> List.tryFind (fun p -> Person.key p = name)
         |> Result.requireSome $"unknown person '{name}'"
         |> Validation.ofResult
 
-    match names with
-    | null -> Validation.error "needs at least one person"
-    | names ->
-        names
-        |> List.ofArray
-        |> List.traverseValidationA find
-        |> Validation.bind (fun found ->
-            found
-            |> Result.requireNotEmpty "needs at least one person"
-            |> Validation.ofResult
-            |> Validation.map (fun () -> List.distinct found))
+    names
+    |> Option.defaultValue []
+    |> List.traverseValidationA find
+    |> Validation.bind (fun found ->
+        found
+        |> Result.requireNotEmpty "needs at least one person"
+        |> Validation.ofResult
+        |> Validation.map (fun () -> List.distinct found))
     |> Parse.within context
 
-let private groups people (dto: Dictionary<string, string array | null>) =
+let private groups people (dto: Map<string, string list option>) =
     let group name =
-        match dto.TryGetValue name with
-        | true, members -> resolve people $"groups.{name}" members
-        | _ -> Validation.error $"groups: missing '{name}'"
+        match dto |> Map.tryFind name with
+        | Some members -> resolve people $"groups.{name}" members
+        | None -> Validation.error $"groups: missing '{name}'"
 
     let unknown =
-        [
-            for name in dto.Keys do
-                if name <> infraDevelopers && name <> appDevelopers then
-                    $"groups: unknown group '{name}'"
-        ]
+        dto
+        |> Map.keys
+        |> Seq.filter (fun name -> name <> infraDevelopers && name <> appDevelopers)
+        |> Seq.map (fun name -> $"groups: unknown group '{name}'")
+        |> List.ofSeq
 
     validation {
         let! infra = group infraDevelopers
@@ -188,13 +182,13 @@ let private groups people (dto: Dictionary<string, string array | null>) =
         return infra, app
     }
 
-let private repoLeads people (dto: Dictionary<string, string array | null>) =
-    let repo (KeyValue(name, leads)) =
+let private repoLeads people (dto: Map<string, string list option>) =
+    let repo (name, leads) =
         (fun repo leads -> repo, leads) <!^> RepoName.parse name
         <*> resolve people $"repo-leads.{name}" leads
 
     dto
-    |> List.ofSeq
+    |> Map.toList
     |> List.traverseValidationA repo
     |> Validation.map Map.ofList
     |> Validation.bind (fun leads ->
@@ -203,9 +197,8 @@ let private repoLeads people (dto: Dictionary<string, string array | null>) =
         else
             Validation.error "repo-leads: missing 'platform'")
 
-let private emergencyAccess (ids: string array) =
+let private emergencyAccess (ids: string list) =
     ids
-    |> List.ofArray
     |> List.traverseValidationA (EntraObjectId.parse "emergency-access" >> Validation.ofResult)
     |> Validation.bind (fun ids ->
         if List.length ids >= 2 then
@@ -214,46 +207,20 @@ let private emergencyAccess (ids: string array) =
             Validation.error "emergency-access: needs two accounts")
 
 let fromDto (dto: PeopleFileDto) : Validation<Access, string> =
+    let section name value parse =
+        Parse.required name value |> Validation.ofResult |> Validation.bind parse
+
     validation {
         let! people =
-            Parse.required "people" dto.people
-            |> Validation.ofResult
-            |> Validation.bind (List.ofSeq >> List.traverseValidationA person)
+            section "people" dto.people (Map.toList >> List.traverseValidationA person)
 
         // The sections are independent (and!), so one run reports every problem in the file.
         let! () = uniqueGitHub people
-
-        and! infra, app =
-            Parse.required "groups" dto.groups
-            |> Validation.ofResult
-            |> Validation.bind (groups people)
-
-        and! leads =
-            Parse.required "repo-leads" dto.repoLeads
-            |> Validation.ofResult
-            |> Validation.bind (repoLeads people)
-
-        and! emergency =
-            Parse.required "emergency-access" dto.emergencyAccess
-            |> Validation.ofResult
-            |> Validation.bind emergencyAccess
-
+        and! infra, app = section "groups" dto.groups (groups people)
+        and! leads = section "repo-leads" dto.repoLeads (repoLeads people)
+        and! emergency = section "emergency-access" dto.emergencyAccess emergencyAccess
         return Access.create people infra app leads emergency
     }
 
 let parse (yaml: string) : Validation<Access, string> =
     Parse.yaml<PeopleFileDto> yaml |> Validation.bind fromDto
-
-let load path =
-    match parse (File.ReadAllText path) with
-    | Ok access -> access
-    | Error errors -> failwith (String.Join("\n", $"{path} is invalid:" :: errors))
-
-/// The CODEOWNERS file every repo must contain: everything is owned by the repo's leads.
-let codeowners (leads: Person list) =
-    let owners =
-        leads
-        |> List.map (fun p -> "@" + GitHubHandle.value p.github)
-        |> String.concat " "
-
-    $"# Generated from Ulberg/platform access/people.yaml (repo-leads). Change it there, not here.\n* {owners}\n"

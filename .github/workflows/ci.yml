@@ -48,6 +48,10 @@ jobs:
         with:
           global-json-file: global.json
       - run: dotnet tool restore
+      - name: F# style (no mutation, discarded results or null)
+        run: .github/scripts/check_fsharp_style.sh
+      - name: Style guide matches Ulberg/todo
+        run: curl -sSfL https://raw.githubusercontent.com/Ulberg/todo/main/docs/fsharp-style.md | diff -u - docs/fsharp-style.md
       - name: Format (Fantomas)
         run: dotnet fantomas --check stacks tests
       - name: Build (warnings are errors)

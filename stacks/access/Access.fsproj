@@ -5,6 +5,8 @@
   <ItemGroup>
     <Compile Include="Parse.fs" />
     <Compile Include="People.fs" />
+    <Compile Include="Desired.fs" />
+    <Compile Include="Codeowners.fs" />
     <Compile Include="Entra.fs" />
     <Compile Include="AzureRbac.fs" />
     <Compile Include="GitHub.fs" />

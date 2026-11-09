@@ -1,28 +1,8 @@
 module Platform.Access.Tests.PeopleTests
 
-open System.IO
 open Expecto
 open Platform.Access.People
-
-let private valid =
-    """
-people:
-  ann: { github: ann-gh, entra: 11111111-1111-1111-1111-111111111111 }
-  bob: { github: bob-gh, entra: 22222222-2222-2222-2222-222222222222 }
-groups:
-  infra-developers: [ann]
-  app-developers: [ann, bob]
-repo-leads:
-  platform: [ann]
-  todo: [ann, bob]
-emergency-access:
-  - 33333333-3333-3333-3333-333333333333
-  - 44444444-4444-4444-4444-444444444444
-"""
-
-let private parsed yaml =
-    parse yaml
-    |> Result.defaultWith (failtestf "expected the file to parse, got %A")
+open Platform.Access.Tests.Fixtures
 
 let private errors yaml =
     match parse yaml with
@@ -99,22 +79,17 @@ let tests =
                     "groups: unknown group 'app-develpers'"
             }
 
-            test "a misspelled section is rejected, not ignored" { rejects "repo-leads:" "repo-lead:" "not valid YAML" }
+            test "a misspelled section is rejected, not ignored" {
+                rejects "repo-leads:" "repo-lead:" "The JSON property 'repo-lead' could not be mapped"
+            }
+
+            test "an empty file is rejected" { Expect.equal (parse "") (Error [ "the file is empty" ]) "empty file" }
+
+            test "a value of the wrong shape is rejected" {
+                rejects "infra-developers: [ann]" "infra-developers: { ann: 1 }" "unexpected content"
+            }
 
             test "two emergency-access accounts are required" {
                 rejects "  - 44444444-4444-4444-4444-444444444444\n" "" "emergency-access: needs two accounts"
-            }
-
-            test "CODEOWNERS gives the whole repo to its leads" {
-                let access = parsed valid
-                let todo = access.repoLeads |> Map.toList |> List.map snd |> List.last
-                Expect.stringEnds (codeowners todo) "\n* @ann-gh @bob-gh\n" "owners line"
-            }
-
-            test "the committed access/people.yaml and CODEOWNERS are valid" {
-                let root = Path.Combine(__SOURCE_DIRECTORY__, "..", "..")
-                let access = load (Path.Combine(root, "access", "people.yaml"))
-                let committed = File.ReadAllText(Path.Combine(root, ".github", "CODEOWNERS"))
-                Expect.equal committed (codeowners access.platformLeads) "platform CODEOWNERS matches people.yaml"
             }
         ]

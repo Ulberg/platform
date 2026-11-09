@@ -3,7 +3,10 @@
     <OutputType>Exe</OutputType>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="Fixtures.fs" />
     <Compile Include="PeopleTests.fs" />
+    <Compile Include="DesiredTests.fs" />
+    <Compile Include="CodeownersTests.fs" />
     <Compile Include="Main.fs" />
   </ItemGroup>
   <ItemGroup>

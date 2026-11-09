@@ -1,4 +1,5 @@
-/// Workforce-tenant groups, PIM for Groups and Conditional Access (PLAN.md §2.2, §7, §12).
+/// Turns the Entra part of a Desired.Plan into resources: groups, memberships, PIM for Groups and
+/// Conditional Access (PLAN.md §2.2, §7, §12). No decisions are made here; they are all in Desired.fs.
 module Platform.Access.Entra
 
 open Pulumi
@@ -6,208 +7,139 @@ open Pulumi.FSharp
 open Pulumi.AzureAD
 open Pulumi.AzureAD.Inputs
 open Platform.Access.People
+open Platform.Access.Desired
 
-type Groups =
+type Deployed =
     {
-        infraDevelopers: Group
-        appDevelopers: Group
-        /// Standing read access. Infra developers are members.
-        platformRead: Group
-        /// Break-glass write. Only reachable by activating PIM, max 2 h.
-        platformWrite: Group
-        /// Admin. Only reachable by activating PIM, max 1 h, platform leads only.
-        platformAdmin: Group
+        groups: Map<GroupName, Group>
+        members: GroupMember list
+        pimPolicies: GroupRoleManagementPolicy list
+        eligibilities: PrivilegedAccessGroupEligibilitySchedule list
+        conditionalAccess: ConditionalAccessPolicy list
     }
 
-let private group (name: string) (description: string) =
+let private group (name: GroupName) =
     Group(
-        name,
+        GroupName.value name,
         GroupArgs(
-            DisplayName = name,
-            Description = description,
+            DisplayName = GroupName.value name,
+            Description = GroupName.description name,
             SecurityEnabled = true,
             MailEnabled = false,
             PreventDuplicateNames = true
         )
     )
 
-let private memberOf (group: Group) (resourceName: string) (memberObjectId: Input<string>) =
-    GroupMember(resourceName, GroupMemberArgs(GroupObjectId = group.ObjectId, MemberObjectId = memberObjectId))
-    |> ignore
+let private groupMember (groups: Map<GroupName, Group>) (m: Membership) =
+    let memberId =
+        match m.includes with
+        | Member.Person p -> input (EntraObjectId.string p.entra)
+        | Member.Group inner -> io groups[inner].ObjectId
 
-let private nest (outer: Group) (inner: Group) (innerName: string) =
-    memberOf outer $"{innerName}-in-{outer.GetResourceName()}" (io inner.ObjectId)
+    GroupMember(
+        Membership.resourceName m,
+        GroupMemberArgs(GroupObjectId = groups[m.group].ObjectId, MemberObjectId = memberId)
+    )
 
-let groups (access: Access) =
-    let g =
-        {
-            infraDevelopers = group "infra-developers" "Infra developers (access/people.yaml). Standing read only."
-            appDevelopers = group "app-developers" "App developers (access/people.yaml). App logs, metrics and traces."
-            platformRead = group "platform-read" "Read on Azure, AKS and the DB. Contains platform-write."
-            platformWrite = group "platform-write" "Break-glass write. PIM only (max 2 h). Contains platform-admin."
-            platformAdmin = group "platform-admin" "Platform admin. PIM only (max 1 h), platform leads only."
-        }
-
-    for p in access.infraDevelopers do
-        memberOf g.infraDevelopers $"infra-developers-{Person.key p}" (input (EntraObjectId.string p.entra))
-
-    for p in access.appDevelopers do
-        memberOf g.appDevelopers $"app-developers-{Person.key p}" (input (EntraObjectId.string p.entra))
-
-    // read ⊃ write ⊃ admin, so each consumer only maps three levels.
-    nest g.platformRead g.infraDevelopers "infra-developers"
-    nest g.platformRead g.platformWrite "platform-write"
-    nest g.platformWrite g.platformAdmin "platform-admin"
-    g
-
-/// PIM for Groups: membership is eligible only, activated with MFA + justification, time-boxed.
-let private pimGroup (group: Group) (name: string) maxHours (eligible: Person list) =
-    let policy =
-        GroupRoleManagementPolicy(
-            $"{name}-pim-policy",
-            GroupRoleManagementPolicyArgs(
-                GroupId = group.ObjectId,
-                RoleId = "member",
-                ActivationRules =
-                    GroupRoleManagementPolicyActivationRulesArgs(
-                        MaximumDuration = $"PT{maxHours}H",
-                        RequireMultifactorAuthentication = true,
-                        RequireJustification = true,
-                        RequireApproval = false
-                    ),
-                // Eligibility may be permanent (it is the "who may ask" list). Direct active assignments must
-                // expire, after at least 15 days (the shortest PIM allows). Normal access is activation only.
-                EligibleAssignmentRules =
-                    GroupRoleManagementPolicyEligibleAssignmentRulesArgs(ExpirationRequired = false),
-                ActiveAssignmentRules =
-                    GroupRoleManagementPolicyActiveAssignmentRulesArgs(
-                        ExpirationRequired = true,
-                        ExpireAfter = "P15D",
-                        RequireMultifactorAuthentication = true,
-                        RequireJustification = true
-                    )
-            )
-        )
-
-    for p in eligible do
-        PrivilegedAccessGroupEligibilitySchedule(
-            $"{name}-eligible-{Person.key p}",
-            PrivilegedAccessGroupEligibilityScheduleArgs(
-                GroupId = group.ObjectId,
-                PrincipalId = EntraObjectId.string p.entra,
-                AssignmentType = "member",
-                PermanentAssignment = true,
-                Justification = "Generated from access/people.yaml"
-            ),
-            CustomResourceOptions(DependsOn = InputList.op_Implicit (policy :> Resource))
-        )
-        |> ignore
-
-let pim (access: Access) (g: Groups) =
-    pimGroup g.platformWrite "platform-write" 2 access.infraDevelopers
-    pimGroup g.platformAdmin "platform-admin" 1 access.platformLeads
-
-type ConditionalAccessMode =
-    | Off
-    | ReportOnly
-    | Enforced
-
-let parseMode =
-    function
-    | "off" -> Off
-    | "report-only" -> ReportOnly
-    | "on" -> Enforced
-    | other -> failwith $"access:conditionalAccess must be off, report-only or on, not '{other}'"
-
-/// Windows Azure Service Management API (portal, az CLI, ARM).
-let private azureManagementApp = "797f4846-ba00-4fd7-ba43-dac1f8f63013"
-
-/// Built-in authentication strength "Phishing-resistant MFA" (passkeys, FIDO2, Windows Hello).
-let private phishingResistant =
-    "/policies/authenticationStrengthPolicies/00000000-0000-0000-0000-000000000004"
-
-/// Replaces security defaults. Emergency-access accounts are excluded from every policy.
-let conditionalAccess (mode: ConditionalAccessMode) (access: Access) (g: Groups) =
-    let state =
-        match mode with
-        | Off -> None
-        | ReportOnly -> Some "enabledForReportingButNotEnforced"
-        | Enforced -> Some "enabled"
-
-    let excluded = access.emergencyAccess |> List.map EntraObjectId.string
-
-    let policy
-        name
-        (conditions: ConditionalAccessPolicyConditionsArgs)
-        (grant: ConditionalAccessPolicyGrantControlsArgs)
-        =
-        state
-        |> Option.iter (fun state ->
-            ConditionalAccessPolicy(
-                name,
-                ConditionalAccessPolicyArgs(
-                    DisplayName = name,
-                    State = state,
-                    Conditions = conditions,
-                    GrantControls = grant
-                )
-            )
-            |> ignore)
-
-    let users (included: ConditionalAccessPolicyConditionsUsersArgs) =
-        included.ExcludedUsers <- InputList.op_Implicit (Array.ofList excluded)
-        included
-
-    let allApps =
-        ConditionalAccessPolicyConditionsApplicationsArgs(IncludedApplications = InputList.op_Implicit [| "All" |])
-
-    policy
-        "CA01 Require MFA for everyone"
-        (ConditionalAccessPolicyConditionsArgs(
-            ClientAppTypes = InputList.op_Implicit [| "all" |],
-            Applications = allApps,
-            Users =
-                users (ConditionalAccessPolicyConditionsUsersArgs(IncludedUsers = InputList.op_Implicit [| "All" |]))
-        ))
-        (ConditionalAccessPolicyGrantControlsArgs(Operator = "OR", BuiltInControls = InputList.op_Implicit [| "mfa" |]))
-
-    policy
-        "CA02 Block legacy authentication"
-        (ConditionalAccessPolicyConditionsArgs(
-            ClientAppTypes = InputList.op_Implicit [| "exchangeActiveSync"; "other" |],
-            Applications = allApps,
-            Users =
-                users (ConditionalAccessPolicyConditionsUsersArgs(IncludedUsers = InputList.op_Implicit [| "All" |]))
-        ))
-        (ConditionalAccessPolicyGrantControlsArgs(
-            Operator = "OR",
-            BuiltInControls = InputList.op_Implicit [| "block" |]
-        ))
-
-    policy
-        "CA03 Phishing-resistant MFA for Azure management"
-        (ConditionalAccessPolicyConditionsArgs(
-            ClientAppTypes = InputList.op_Implicit [| "all" |],
-            Applications =
-                ConditionalAccessPolicyConditionsApplicationsArgs(
-                    IncludedApplications = InputList.op_Implicit [| azureManagementApp |]
+let private pimPolicy (groups: Map<GroupName, Group>) (rule: PimRule) =
+    GroupRoleManagementPolicy(
+        $"{GroupName.value rule.group}-pim-policy",
+        GroupRoleManagementPolicyArgs(
+            GroupId = groups[rule.group].ObjectId,
+            RoleId = "member",
+            ActivationRules =
+                GroupRoleManagementPolicyActivationRulesArgs(
+                    MaximumDuration = $"PT{rule.maxHours}H",
+                    RequireMultifactorAuthentication = true,
+                    RequireJustification = true,
+                    RequireApproval = false
                 ),
-            Users =
-                users (ConditionalAccessPolicyConditionsUsersArgs(IncludedUsers = InputList.op_Implicit [| "All" |]))
-        ))
-        (ConditionalAccessPolicyGrantControlsArgs(Operator = "OR", AuthenticationStrengthPolicyId = phishingResistant))
-
-    policy
-        "CA04 Risky sign-ins by infra developers need MFA"
-        (ConditionalAccessPolicyConditionsArgs(
-            ClientAppTypes = InputList.op_Implicit [| "all" |],
-            Applications = allApps,
-            SignInRiskLevels = InputList.op_Implicit [| "medium"; "high" |],
-            Users =
-                users (
-                    ConditionalAccessPolicyConditionsUsersArgs(
-                        IncludedGroups = inputList [ io g.infraDevelopers.ObjectId ]
-                    )
+            // Eligibility may be permanent (it is the "who may ask" list). Direct active assignments must
+            // expire, after at least 15 days (the shortest PIM allows). Normal access is activation only.
+            EligibleAssignmentRules = GroupRoleManagementPolicyEligibleAssignmentRulesArgs(ExpirationRequired = false),
+            ActiveAssignmentRules =
+                GroupRoleManagementPolicyActiveAssignmentRulesArgs(
+                    ExpirationRequired = true,
+                    ExpireAfter = "P15D",
+                    RequireMultifactorAuthentication = true,
+                    RequireJustification = true
                 )
-        ))
-        (ConditionalAccessPolicyGrantControlsArgs(Operator = "OR", BuiltInControls = InputList.op_Implicit [| "mfa" |]))
+        )
+    )
+
+let private eligibility
+    (groups: Map<GroupName, Group>)
+    (policy: GroupRoleManagementPolicy)
+    (rule: PimRule)
+    (p: Person)
+    =
+    PrivilegedAccessGroupEligibilitySchedule(
+        $"{GroupName.value rule.group}-eligible-{Person.key p}",
+        PrivilegedAccessGroupEligibilityScheduleArgs(
+            GroupId = groups[rule.group].ObjectId,
+            PrincipalId = EntraObjectId.string p.entra,
+            AssignmentType = "member",
+            PermanentAssignment = true,
+            Justification = "Generated from access/people.yaml"
+        ),
+        CustomResourceOptions(DependsOn = InputList.op_Implicit (policy :> Resource))
+    )
+
+let private caPolicy (groups: Map<GroupName, Group>) (p: CaPolicy) =
+    let users =
+        match p.users with
+        | AllUsers ->
+            ConditionalAccessPolicyConditionsUsersArgs(
+                IncludedUsers = inputList [ input "All" ],
+                ExcludedUsers = inputList [ for id in p.excludedUsers -> input (EntraObjectId.string id) ]
+            )
+        | Groups names ->
+            ConditionalAccessPolicyConditionsUsersArgs(
+                IncludedGroups = inputList [ for name in names -> io groups[name].ObjectId ],
+                ExcludedUsers = inputList [ for id in p.excludedUsers -> input (EntraObjectId.string id) ]
+            )
+
+    let grant =
+        match p.grant with
+        | RequireMfa ->
+            ConditionalAccessPolicyGrantControlsArgs(Operator = "OR", BuiltInControls = inputList [ input "mfa" ])
+        | Block ->
+            ConditionalAccessPolicyGrantControlsArgs(Operator = "OR", BuiltInControls = inputList [ input "block" ])
+        | RequireStrength id ->
+            ConditionalAccessPolicyGrantControlsArgs(Operator = "OR", AuthenticationStrengthPolicyId = id)
+
+    ConditionalAccessPolicy(
+        p.name,
+        ConditionalAccessPolicyArgs(
+            DisplayName = p.name,
+            State =
+                (match p.state with
+                 | ReportOnly -> "enabledForReportingButNotEnforced"
+                 | Enforced -> "enabled"),
+            Conditions =
+                ConditionalAccessPolicyConditionsArgs(
+                    ClientAppTypes = inputList [ for t in p.clientAppTypes -> input t ],
+                    Applications =
+                        ConditionalAccessPolicyConditionsApplicationsArgs(
+                            IncludedApplications = inputList [ for a in p.applications -> input a ]
+                        ),
+                    SignInRiskLevels = inputList [ for r in p.signInRisk -> input r ],
+                    Users = users
+                ),
+            GrantControls = grant
+        )
+    )
+
+let deploy (plan: Plan) : Deployed =
+    let groups = plan.groups |> List.map (fun name -> name, group name) |> Map.ofList
+    let policies = plan.pim |> List.map (fun rule -> rule, pimPolicy groups rule)
+
+    {
+        groups = groups
+        members = plan.memberships |> List.map (groupMember groups)
+        pimPolicies = policies |> List.map snd
+        eligibilities =
+            policies
+            |> List.collect (fun (rule, policy) -> rule.eligible |> List.map (eligibility groups policy rule))
+        conditionalAccess = plan.conditionalAccess |> List.map (caPolicy groups)
+    }
