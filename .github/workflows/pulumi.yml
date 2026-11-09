@@ -1,11 +1,14 @@
 name: pulumi
 
-# Preview on every PR and on main. Apply only on main, after a platform lead approves the `dev`
-# environment. Azure only issues a token for the apply identity to an approved `dev` job.
+# Preview on every PR, on main and every night (drift and standing access). Apply only on pushes to main,
+# after a platform lead approves the `dev` environment. Azure only issues a token for the apply identity
+# to an approved `dev` job.
 on:
   pull_request:
   push:
     branches: [main]
+  schedule:
+    - cron: "17 5 * * *"
 
 permissions:
   contents: read
@@ -47,6 +50,10 @@ jobs:
           client-id: ${{ vars.AZURE_PREVIEW_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Standing access check (D35, D36)
+        env:
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+        run: .github/scripts/check_standing_access.sh
       - name: GitHub token (read-only app)
         id: github
         uses: actions/create-github-app-token@v3
