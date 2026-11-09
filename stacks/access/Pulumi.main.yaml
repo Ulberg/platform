@@ -6,4 +6,4 @@ config:
   azuread:tenantId: e17ac17e-d8cd-4280-a4e5-94ad2bb85549
   github:owner: Ulberg
   # off | report-only | on. Stays off while security defaults are on (they can't coexist with CA policies).
-  access:conditionalAccess: report-only
+  access:conditionalAccess: "on"
