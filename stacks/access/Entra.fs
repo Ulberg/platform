@@ -78,20 +78,27 @@ let private expiration id required maximumDuration target =
             target = target
         }
 
+let private mfaAndJustification id target =
+    id,
+    JsonSerializer.Serialize
+        {
+            odataType = "#microsoft.graph.unifiedRoleManagementPolicyEnablementRule"
+            id = id
+            enabledRules = [ "MultiFactorAuthentication"; "Justification" ]
+            target = target
+        }
+
 /// The rules to PATCH on a directory role's PIM policy, as (rule ID, JSON body). The same settings as the
-/// group PIM policies: activation for at most `maxHours` with MFA + justification, permanent eligibility.
+/// group PIM policies: activation for at most `maxHours` with MFA + justification; permanent eligibility;
+/// direct active assignments need MFA + justification and expire after 15 days (the shortest PIM allows),
+/// so nobody can be given the role permanently outside PIM.
 let policyRules (pim: DirectoryRolePim) : (string * string) list =
     [
         expiration "Expiration_EndUser_Assignment" true $"PT{pim.maxHours}H" (target "EndUser" "Assignment")
-        "Enablement_EndUser_Assignment",
-        JsonSerializer.Serialize
-            {
-                odataType = "#microsoft.graph.unifiedRoleManagementPolicyEnablementRule"
-                id = "Enablement_EndUser_Assignment"
-                enabledRules = [ "MultiFactorAuthentication"; "Justification" ]
-                target = target "EndUser" "Assignment"
-            }
+        mfaAndJustification "Enablement_EndUser_Assignment" (target "EndUser" "Assignment")
         expiration "Expiration_Admin_Eligibility" false "P365D" (target "Admin" "Eligibility")
+        expiration "Expiration_Admin_Assignment" true "P15D" (target "Admin" "Assignment")
+        mfaAndJustification "Enablement_Admin_Assignment" (target "Admin" "Assignment")
     ]
 
 // ---------------------------------------------------------------------------------------------

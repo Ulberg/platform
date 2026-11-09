@@ -24,13 +24,15 @@ let tests =
     testList
         "directory-role PIM policy"
         [
-            test "sets activation length, activation checks and eligibility expiry" {
+            test "sets activation, eligibility and direct-assignment rules" {
                 Expect.equal
                     (rules |> List.map fst)
                     [
                         "Expiration_EndUser_Assignment"
                         "Enablement_EndUser_Assignment"
                         "Expiration_Admin_Eligibility"
+                        "Expiration_Admin_Assignment"
+                        "Enablement_Admin_Assignment"
                     ]
                     "rule IDs"
             }
@@ -44,6 +46,17 @@ let tests =
             test "activation needs MFA and a justification" {
                 Expect.equal
                     (text "enabledRules" (rule "Enablement_EndUser_Assignment"))
+                    """["MultiFactorAuthentication","Justification"]"""
+                    "enabled rules"
+            }
+
+            test "a direct active assignment can't be permanent and needs MFA and a justification" {
+                let r = rule "Expiration_Admin_Assignment"
+                Expect.equal (text "isExpirationRequired" r) "True" "expiry required"
+                Expect.equal (text "maximumDuration" r) "P15D" "at most 15 days"
+
+                Expect.equal
+                    (text "enabledRules" (rule "Enablement_Admin_Assignment"))
                     """["MultiFactorAuthentication","Justification"]"""
                     "enabled rules"
             }
