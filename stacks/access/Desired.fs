@@ -159,7 +159,7 @@ type SignInFrequency =
 type CaSession =
     {
         signIn: SignInFrequency
-        /// false: the browser never offers "stay signed in".
+        /// false: the browser never offers "stay signed in". Entra only allows that on policies for all apps.
         persistentBrowser: bool
     }
 
@@ -249,7 +249,7 @@ let private conditionalAccess (state: CaState option) (access: Access) =
                 (Session
                     {
                         signIn = Hours 4
-                        persistentBrowser = false
+                        persistentBrowser = true
                     })
             policy
                 "CA07 Developers sign in every 12 h"
@@ -261,6 +261,18 @@ let private conditionalAccess (state: CaState option) (access: Access) =
                     {
                         signIn = Hours 12
                         persistentBrowser = true
+                    })
+            // Part of D39 for the Azure tools: Entra only allows "never stay signed in" on all apps.
+            policy
+                "CA08 Infra developers never stay signed in"
+                [ "all" ]
+                (Apps [ "All" ])
+                (Groups [ InfraDevelopers ])
+                []
+                (Session
+                    {
+                        signIn = Hours 12
+                        persistentBrowser = false
                     })
         ]
 

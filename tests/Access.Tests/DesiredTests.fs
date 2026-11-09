@@ -87,7 +87,7 @@ let tests =
 
             test "every Conditional Access policy excludes both emergency accounts" {
                 let policies = (planWith (Some ReportOnly)).conditionalAccess
-                Expect.hasLength policies 7 "seven policies"
+                Expect.hasLength policies 8 "eight policies"
 
                 for p in policies do
                     Expect.equal p.state ReportOnly p.name
@@ -124,11 +124,22 @@ let tests =
                     (Session
                         {
                             signIn = Hours 4
-                            persistentBrowser = false
+                            persistentBrowser = true
                         })
                     "CA06"
 
                 Expect.equal (find "CA06").users (Groups [ InfraDevelopers ]) "CA06 users"
+
+                Expect.equal
+                    (find "CA08").controls
+                    (Session
+                        {
+                            signIn = Hours 12
+                            persistentBrowser = false
+                        })
+                    "CA08: infra developers never stay signed in"
+
+                Expect.equal (find "CA08").users (Groups [ InfraDevelopers ]) "CA08 users"
 
                 Expect.equal
                     (find "CA07").controls
@@ -140,6 +151,14 @@ let tests =
                     "CA07"
 
                 Expect.equal (find "CA07").users (Groups [ InfraDevelopers; AppDevelopers ]) "CA07 users"
+            }
+
+            test "\"never stay signed in\" is only used on policies for all apps (Entra rejects it otherwise)" {
+                for p in (planWith (Some Enforced)).conditionalAccess do
+                    match p.controls with
+                    | Session { persistentBrowser = false }
+                    | GrantAndSession(_, { persistentBrowser = false }) -> Expect.equal p.target (Apps [ "All" ]) p.name
+                    | _ -> ()
             }
 
             test "the CA05 Graph body targets the context and asks for phishing-resistant MFA every time" {
