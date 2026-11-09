@@ -10,6 +10,7 @@ open Pulumi.FSharp
 open Pulumi.AzureAD
 open Pulumi.AzureAD.Inputs
 open Pulumi.Command.Local
+open Pulumi.Random
 open Platform.Access.People
 open Platform.Access.Desired
 
@@ -22,6 +23,9 @@ type Deployed =
         directoryRolePolicies: Command list
         /// The group PIM policies' activation check (MFA or the authentication context), set by script.
         groupActivations: Command list
+        /// Claude's agent accounts (D41) and their read-only directory roles.
+        agents: User list
+        agentDirectoryRoles: DirectoryRoleAssignment list
         directoryRoleEligibilities: DirectoryRoleEligibilityScheduleRequest list
         conditionalAccess: ConditionalAccessPolicy list
         /// Conditional Access policies the azuread provider can't express (authentication-context targets).
@@ -377,10 +381,44 @@ let private group (name: GroupName) =
         )
     )
 
-let private groupMember (groups: Map<GroupName, Group>) (m: Membership) =
+/// Claude's account for one developer (D41). Nobody knows or uses its password: it gets a random one
+/// because Entra requires a password, and signs in with its own passkey (set up with a Temporary Access
+/// Pass). The password stays an encrypted Pulumi secret.
+let private agentUser (tenantDomain: string) (a: Agent) =
+    let password =
+        RandomPassword($"{Agent.key a}-password", RandomPasswordArgs(Length = 64, Special = true))
+
+    User(
+        Agent.key a,
+        UserArgs(
+            UserPrincipalName = $"{Agent.key a}@{tenantDomain}",
+            DisplayName = Agent.displayName a,
+            MailNickname = Agent.key a,
+            // The link to its person, in Entra itself: logs, filters and alerts can tell whose agent it is.
+            ManagerId = EntraObjectId.string a.owner.entra,
+            EmployeeType = "Agent",
+            AccountEnabled = true,
+            // Needed to assign it a licence (Entra ID P2).
+            UsageLocation = "NO",
+            Password = password.Result,
+            DisablePasswordExpiration = true
+        )
+    )
+
+let private agentDirectoryRole (users: Map<string, User>) (r: AgentDirectoryRole) =
+    DirectoryRoleAssignment(
+        $"{Agent.key r.agent}-{DirectoryRole.value r.role}",
+        DirectoryRoleAssignmentArgs(
+            RoleId = DirectoryRole.templateId r.role,
+            PrincipalObjectId = users[Agent.key r.agent].ObjectId
+        )
+    )
+
+let private groupMember (groups: Map<GroupName, Group>) (agents: Map<string, User>) (m: Membership) =
     let memberId =
         match m.includes with
         | Member.Person p -> input (EntraObjectId.string p.entra)
+        | Member.Agent a -> io agents[Agent.key a].ObjectId
         | Member.Group inner -> io groups[inner].ObjectId
 
     GroupMember(
@@ -547,7 +585,14 @@ let private contextPolicy
     (after: Resource list)
     (contextId: string, p: CaPolicy)
     =
-    let body = groupIds.Apply(fun ids -> contextPolicyBody ids contextId p)
+    // Only a policy for groups waits for their IDs. Otherwise a new group (unknown ID in a preview) would
+    // make every context policy look changed.
+    let body =
+        match p.users with
+        | Groups _ -> groupIds.Apply(fun ids -> contextPolicyBody ids contextId p)
+        | AllUsers
+        | Members
+        | Guests -> Output.Create(contextPolicyBody Map.empty contextId p)
 
     Command(
         p.name,
@@ -564,8 +609,13 @@ let private contextPolicy
                     ],
             Triggers = inputList [ io (body.Apply box); input (box scripts.caContextPolicy) ]
         ),
-        // After the provider's policies: creating them all at once gets Graph to throttle.
-        CustomResourceOptions(DependsOn = inputList [ for r in after -> input r ])
+        CustomResourceOptions(
+            // After the provider's policies: creating them all at once gets Graph to throttle.
+            DependsOn = inputList [ for r in after -> input r ],
+            // The delete step removes the policy by name. Replacing create-first would let the old resource's
+            // delete remove the policy the new one just set, so a replace deletes first.
+            DeleteBeforeReplace = true
+        )
     )
 
 let private roleEligibility (policy: Command) (pim: DirectoryRolePim) (p: Person) =
@@ -696,6 +746,11 @@ let deploy (scripts: Scripts) (plan: Plan) : Deployed =
     let alertEmails = Output.CreateSecret(plan.alertEmails |> List.map Email.value)
     let groups = plan.groups |> List.map (fun name -> name, group name) |> Map.ofList
 
+    let agentUsers =
+        plan.agents
+        |> List.map (fun a -> Agent.key a, agentUser plan.tenantDomain a)
+        |> Map.ofList
+
     let groupIds =
         Output
             .All(
@@ -738,7 +793,7 @@ let deploy (scripts: Scripts) (plan: Plan) : Deployed =
 
     {
         groups = groups
-        members = plan.memberships |> List.map (groupMember groups)
+        members = plan.memberships |> List.map (groupMember groups agentUsers)
         pimPolicies = policies |> List.map snd
         eligibilities =
             policies
@@ -750,4 +805,6 @@ let deploy (scripts: Scripts) (plan: Plan) : Deployed =
             |> List.collect (fun (pim, policy) -> pim.eligible |> List.map (roleEligibility policy pim))
         conditionalAccess = appPolicyResources
         contextPolicies = contextCommands
+        agents = agentUsers |> Map.toList |> List.map snd
+        agentDirectoryRoles = plan.agentDirectoryRoles |> List.map (agentDirectoryRole agentUsers)
     }

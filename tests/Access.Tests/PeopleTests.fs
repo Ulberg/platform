@@ -89,6 +89,18 @@ let tests =
                 rejects "infra-developers: [ann]" "infra-developers: { ann: 1 }" "unexpected content"
             }
 
+            test "an agent must belong to a known person" {
+                rejects "agents: [ann]" "agents: [carl]" "agents: unknown person 'carl'"
+            }
+
+            test "only infra developers get an agent, for now" {
+                rejects "agents: [ann]" "agents: [bob]" "agents: 'bob' is not an infra developer"
+            }
+
+            test "the agents section is optional" {
+                Expect.isEmpty (parsed (valid.Replace("agents: [ann]", ""))).agents "no agents"
+            }
+
             test "two emergency-access accounts are required" {
                 rejects "  - 44444444-4444-4444-4444-444444444444\n" "" "emergency-access: needs two accounts"
             }

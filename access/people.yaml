@@ -18,3 +18,7 @@ repo-leads:                   # code owners; the platform leads are also eligibl
 emergency-access:
   - 9c485111-65fd-44cc-b019-d4bca6cf2779   # breakglass1
   - 4340cda3-8d90-4023-be5b-6feeba472bf8   # breakglass2
+
+# Claude's own read-only Entra account per developer (D41): <name>-agent@<tenant>, in platform-agents.
+# Read roles only, never PIM-eligible; you sign it in with its own passkey (see AGENTS.md).
+agents: [endre]
