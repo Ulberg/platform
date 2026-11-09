@@ -48,7 +48,7 @@ The script is safe to re-run. It creates:
 | `stplatform21784576` / `pulumi` | Pulumi state. ZRS, Entra-only auth (shared keys disabled), versioning + 30-day soft delete |
 | `kv-platform-21784576` / `pulumi` | RSA key for Pulumi secrets. RBAC mode, purge protection |
 | `id-platform-apply` | Managed identity, federated **only** with `repo:Ulberg/platform:environment:dev`. Contributor + RBAC Administrator on the subscription; Graph: groups, users, apps, PIM, Conditional Access |
-| `id-platform-preview` | Managed identity, federated **only** with `repo:Ulberg/platform:pull_request`. Reader + read-only Graph; write only on the state container (for preview lock files) |
+| `id-platform-preview` | Managed identity, federated **only** with `repo:Ulberg/platform:pull_request` and `repo:Ulberg/platform:ref:refs/heads/main` (the preview shown before an apply is approved). Reader + read-only Graph; write only on the state container (for preview lock files) |
 | GitHub variables | `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `AZURE_PREVIEW_CLIENT_ID`, `PULUMI_BACKEND_URL`, `PULUMI_SECRETS_PROVIDER`, and `AZURE_CLIENT_ID` in environment `dev` |
 
 There are no client secrets anywhere: both identities sign in with GitHub's OIDC token.
@@ -58,5 +58,7 @@ There are no client secrets anywhere: both identities sign in with GitHub's OIDC
 The admin account also gets standing *Storage Blob Data Contributor* on the state account and *Key Vault Crypto Officer* on the vault, so it can create the container and key. Pulumi moves these to PIM-eligible later.
 
 Verified after the run: `pulumi login azblob://pulumi?storage_account=stplatform21784576` works with Entra sign-in only (no storage keys).
+
+The empty Pulumi stack `stacks/access` → `main` was created once by the admin (`pulumi stack init main --secrets-provider azurekeyvault://…`), so its encrypted data key is committed in `Pulumi.main.yaml`. No resources were created from a laptop.
 
 The External ID tenant's CI identity is created in Phase 3, when we first manage resources there.

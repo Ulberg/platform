@@ -1,19 +1,20 @@
-# Who may do what. This file is the only source of truth for access.
-# Pulumi renders it into Entra groups (read ⊂ write ⊂ admin, write/admin via PIM),
-# GitHub rulesets + CODEOWNERS, Kubernetes RBAC and Grafana org membership.
-# Changes need approval from a platform lead.
-
+# Everyone with access, as code. Pulumi (stacks/access) turns this into Entra groups, PIM eligibility,
+# Azure role assignments, GitHub rulesets and environments, and checks every repo's CODEOWNERS.
+# Object IDs are not secrets.
 people:
   endre:
     github: Ulberg
-    entra: 19d54064-9c11-4c17-8b66-dee39703a3e2   # object ID of the admin account (not a secret)
+    entra: 19d54064-9c11-4c17-8b66-dee39703a3e2   # admin account in the workforce tenant
 
-# Standing access is read-only. See PLAN.md §5.1 in Ulberg/todo.
 groups:
-  infra-developers: [endre]   # Azure/K8s/DB read, infra + app telemetry; eligible for break-glass
+  infra-developers: [endre]   # standing read on Azure/K8s/DB + infra logs; eligible for platform-write via PIM
   app-developers: [endre]     # app logs, metrics and traces only
 
-# The only people who may approve and merge in each repo.
-repo-leads:
+repo-leads:                   # code owners; the platform leads are also eligible for platform-admin via PIM
   platform: [endre]
   todo: [endre]
+
+# Emergency-access accounts: permanent Global Admin, FIDO2 keys kept offline, excluded from Conditional Access.
+emergency-access:
+  - 9c485111-65fd-44cc-b019-d4bca6cf2779   # breakglass1
+  - 4340cda3-8d90-4023-be5b-6feeba472bf8   # breakglass2

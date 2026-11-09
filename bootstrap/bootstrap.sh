@@ -9,7 +9,7 @@
 #   - Pulumi state: storage account (Entra auth only, no shared keys) + Key Vault key for secrets
 #   - two CI identities (user-assigned managed identities, no secrets) trusted via GitHub OIDC:
 #       id-platform-apply    only from repo:<repo>:environment:dev   (approved apply runs)
-#       id-platform-preview  only from repo:<repo>:pull_request      (read-only preview)
+#       id-platform-preview  only from repo:<repo>:pull_request and :ref:refs/heads/main (read-only preview)
 #   - their Azure roles and Microsoft Graph permissions
 #   - GitHub variables in the platform repo pointing at all of the above
 set -euo pipefail
@@ -90,9 +90,13 @@ fi
 create_identity() { # name federated-subject
   az identity show -n "$1" -g "$STATE_RESOURCE_GROUP" -o none 2>/dev/null \
     || az identity create -n "$1" -g "$STATE_RESOURCE_GROUP" -l "$LOCATION" -o none
-  if ! az identity federated-credential show -n github --identity-name "$1" -g "$STATE_RESOURCE_GROUP" -o none 2>/dev/null; then
-    az identity federated-credential create -n github --identity-name "$1" -g "$STATE_RESOURCE_GROUP" \
-      --issuer https://token.actions.githubusercontent.com --subject "$2" --audiences api://AzureADTokenExchange -o none
+  federate "$1" github "$2"
+}
+
+federate() { # identity credential-name federated-subject
+  if ! az identity federated-credential show -n "$2" --identity-name "$1" -g "$STATE_RESOURCE_GROUP" -o none 2>/dev/null; then
+    az identity federated-credential create -n "$2" --identity-name "$1" -g "$STATE_RESOURCE_GROUP" \
+      --issuer https://token.actions.githubusercontent.com --subject "$3" --audiences api://AzureADTokenExchange -o none
   fi
 }
 
@@ -131,6 +135,8 @@ grant_graph "$APPLY_PRINCIPAL" \
 
 log "CI identity for pull-request previews ($PREVIEW_IDENTITY)"
 create_identity "$PREVIEW_IDENTITY" "repo:$GITHUB_REPO:pull_request"
+# Also from pushes to main, so every apply is shown as a preview before a lead approves it.
+federate "$PREVIEW_IDENTITY" github-main "repo:$GITHUB_REPO:ref:refs/heads/main"
 PREVIEW_PRINCIPAL=$(az identity show -n "$PREVIEW_IDENTITY" -g "$STATE_RESOURCE_GROUP" --query principalId -o tsv)
 PREVIEW_CLIENT=$(az identity show -n "$PREVIEW_IDENTITY" -g "$STATE_RESOURCE_GROUP" --query clientId -o tsv)
 assign_role "$PREVIEW_PRINCIPAL" ServicePrincipal Reader "$SUB_SCOPE"
@@ -157,7 +163,7 @@ cat <<EOF
 Pulumi state:   azblob://$STATE_CONTAINER?storage_account=$STATE_STORAGE_ACCOUNT
 Secrets key:    azurekeyvault://$STATE_KEY_VAULT.vault.azure.net/keys/$SECRETS_KEY
 Apply identity:   $APPLY_CLIENT   (trusted only from repo:$GITHUB_REPO:environment:dev)
-Preview identity: $PREVIEW_CLIENT   (trusted only from repo:$GITHUB_REPO:pull_request)
+Preview identity: $PREVIEW_CLIENT   (trusted only from repo:$GITHUB_REPO:pull_request and main)
 
 Note: the apply identity can manage groups, apps, PIM and Conditional Access in this tenant.
 Only an approved run in the 'dev' environment can sign in as it.

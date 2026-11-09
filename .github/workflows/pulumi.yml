@@ -1,0 +1,108 @@
+name: pulumi
+
+# Preview on every PR and on main. Apply only on main, after a platform lead approves the `dev`
+# environment. Azure only issues a token for the apply identity to an approved `dev` job.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# One run at a time against the state, and never cancel an apply halfway through.
+concurrency:
+  group: pulumi-access
+  cancel-in-progress: false
+
+env:
+  PULUMI_VERSION: 3.274.1
+  PULUMI_BACKEND_URL: ${{ vars.PULUMI_BACKEND_URL }}
+  # The Azure providers sign in with the job's GitHub OIDC token; the state backend and the
+  # Key Vault secrets provider use the az CLI session from azure/login.
+  ARM_USE_OIDC: "true"
+  ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+  AZURE_KEYVAULT_AUTH_VIA_CLI: "true"
+
+jobs:
+  preview:
+    name: pulumi preview
+    # Dependabot runs get no OIDC token or secrets. It only bumps GitHub Actions versions.
+    if: github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ARM_CLIENT_ID: ${{ vars.AZURE_PREVIEW_CLIENT_ID }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+      - name: Azure sign-in (read-only preview identity)
+        uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_PREVIEW_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: GitHub token (read-only app)
+        id: github
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.PLATFORM_READER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.PLATFORM_READER_APP_KEY }}
+          owner: Ulberg
+          repositories: platform,todo
+      - uses: pulumi/actions@v7
+        with:
+          command: preview
+          stack-name: main
+          work-dir: stacks/access
+          pulumi-version: ${{ env.PULUMI_VERSION }}
+          diff: true
+          comment-on-summary: true
+        env:
+          GITHUB_TOKEN: ${{ steps.github.outputs.token }}
+
+  apply:
+    name: pulumi up
+    if: github.event_name == 'push'
+    needs: preview
+    runs-on: ubuntu-latest
+    environment: dev
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+      - name: Azure sign-in (apply identity, dev environment only)
+        uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: GitHub token (admin app)
+        id: github
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.PLATFORM_ADMIN_APP_CLIENT_ID }}
+          private-key: ${{ secrets.PLATFORM_ADMIN_APP_KEY }}
+          owner: Ulberg
+          repositories: platform,todo
+      - uses: pulumi/actions@v7
+        with:
+          command: up
+          stack-name: main
+          work-dir: stacks/access
+          pulumi-version: ${{ env.PULUMI_VERSION }}
+          diff: true
+          comment-on-summary: true
+        env:
+          GITHUB_TOKEN: ${{ steps.github.outputs.token }}
