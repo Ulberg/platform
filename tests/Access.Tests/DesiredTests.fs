@@ -141,6 +141,7 @@ let tests =
 
                 Expect.equal (find "CA08").users (Groups [ InfraDevelopers ]) "CA08 users"
                 Expect.equal (find "CA09").users Guests "CA09: guests"
+                Expect.equal (find "CA03").users Members "CA03: members only, so guests keep billing"
 
                 Expect.equal
                     (find "CA09").controls

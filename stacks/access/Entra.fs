@@ -325,15 +325,23 @@ let contextPolicyBody (groupIds: Map<GroupName, string>) (contextId: string) (p:
                         {
                             includeUsers =
                                 match p.users with
-                                | AllUsers -> [ "All" ]
+                                | AllUsers
+                                | Members -> [ "All" ]
                                 | Guests -> [ "GuestsOrExternalUsers" ]
                                 | Groups _ -> []
                             includeGroups =
                                 match p.users with
                                 | AllUsers
+                                | Members
                                 | Guests -> []
                                 | Groups names -> names |> List.map (fun n -> groupIds[n])
-                            excludeUsers = p.excludedUsers |> List.map EntraObjectId.string
+                            excludeUsers =
+                                (match p.users with
+                                 | Members -> [ "GuestsOrExternalUsers" ]
+                                 | AllUsers
+                                 | Guests
+                                 | Groups _ -> [])
+                                @ (p.excludedUsers |> List.map EntraObjectId.string)
                         }
                     signInRiskLevels = p.signInRisk
                 }
@@ -598,6 +606,15 @@ let private caPolicy (groups: Map<GroupName, Group>) (apps: string list, p: CaPo
             ConditionalAccessPolicyConditionsUsersArgs(
                 IncludedUsers = inputList [ input "GuestsOrExternalUsers" ],
                 ExcludedUsers = inputList [ for id in p.excludedUsers -> input (EntraObjectId.string id) ]
+            )
+        | Members ->
+            ConditionalAccessPolicyConditionsUsersArgs(
+                IncludedUsers = inputList [ input "All" ],
+                ExcludedUsers =
+                    inputList (
+                        input "GuestsOrExternalUsers"
+                        :: [ for id in p.excludedUsers -> input (EntraObjectId.string id) ]
+                    )
             )
 
     let conditions =
