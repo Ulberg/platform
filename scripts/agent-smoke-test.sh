@@ -59,6 +59,20 @@ if group=$(az ad group create --display-name agent-write-probe --mail-nickname a
 else
   ok "create an Entra group: refused"
 fi
+m365='{"displayName":"agent-write-probe-m365","mailNickname":"agent-write-probe-m365","groupTypes":["Unified"],"mailEnabled":true,"securityEnabled":false}'
+if group=$(az rest --method POST --url https://graph.microsoft.com/v1.0/groups --body "$m365" --query id -o tsv \
+  2>/dev/null); then
+  bad "created Microsoft 365 group agent-write-probe-m365 (deleting it)"
+  az rest --method DELETE --url "https://graph.microsoft.com/v1.0/groups/$group"
+else
+  ok "create a Microsoft 365 group: refused"
+fi
+if app=$(az ad app create --display-name agent-write-probe --query id -o tsv 2>/dev/null); then
+  bad "registered app agent-write-probe (deleting it)"
+  az ad app delete --id "$app"
+else
+  ok "register an app: refused"
+fi
 
 [ "$failed" = 0 ] && echo "Agent smoke test passed" || echo "Agent smoke test FAILED"
 exit "$failed"

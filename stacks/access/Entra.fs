@@ -27,6 +27,7 @@ type Deployed =
         agents: User list
         agentDirectoryRoles: DirectoryRoleAssignment list
         licences: Command list
+        tenantDefaults: Command
         directoryRoleEligibilities: DirectoryRoleEligibilityScheduleRequest list
         conditionalAccess: ConditionalAccessPolicy list
         /// Conditional Access policies the azuread provider can't express (authentication-context targets).
@@ -41,6 +42,7 @@ type Scripts =
         caContextPolicyDelete: string
         groupLicence: string
         groupLicenceDelete: string
+        tenantAuthorizationPolicy: string
     }
 
 // ---------------------------------------------------------------------------------------------
@@ -199,6 +201,57 @@ let policyRules (alertEmails: string list) (pim: DirectoryRolePim) : (string * s
         notifyAdmins alertEmails "Notification_Admin_Admin_Eligibility" (target "Admin" "Eligibility")
         notifyAdmins alertEmails "Notification_Admin_Admin_Assignment" (target "Admin" "Assignment")
     ]
+
+// ---------------------------------------------------------------------------------------------
+// The tenant's authorization policy (what members may do without a role), in Graph's wire format (DTOs).
+
+type DefaultUserRolePermissionsDto =
+    {
+        allowedToCreateApps: bool
+        allowedToCreateSecurityGroups: bool
+        allowedToCreateTenants: bool
+        allowedToReadOtherUsers: bool
+        allowedToReadBitlockerKeysForOwnedDevice: bool
+        permissionGrantPoliciesAssigned: string list
+    }
+
+type AuthorizationPolicyDto =
+    {
+        allowInvitesFrom: string
+        allowEmailVerifiedUsersToJoinOrganization: bool
+        allowedToSignUpEmailBasedSubscriptions: bool
+        blockMsolPowerShell: bool
+        defaultUserRolePermissions: DefaultUserRolePermissionsDto
+    }
+
+/// The Graph body for `t`. The whole of defaultUserRolePermissions is sent, because Graph replaces it as one
+/// object; the read permissions keep Entra's defaults (people pickers and PIM need to read other users).
+let authorizationPolicyBody (t: TenantDefaults) : string =
+    JsonSerializer.Serialize
+        {
+            allowInvitesFrom =
+                if t.usersCanInviteGuests then
+                    "everyone"
+                else
+                    "adminsAndGuestInviters"
+            allowEmailVerifiedUsersToJoinOrganization = t.usersCanJoinByEmailDomain
+            allowedToSignUpEmailBasedSubscriptions = t.usersCanSignUpForTrials
+            // The retired MSOnline PowerShell module: never.
+            blockMsolPowerShell = true
+            defaultUserRolePermissions =
+                {
+                    allowedToCreateApps = t.usersCanCreateApps
+                    allowedToCreateSecurityGroups = t.usersCanCreateSecurityGroups
+                    allowedToCreateTenants = t.usersCanCreateTenants
+                    allowedToReadOtherUsers = true
+                    allowedToReadBitlockerKeysForOwnedDevice = true
+                    permissionGrantPoliciesAssigned =
+                        if t.usersCanConsentToApps then
+                            [ "ManagePermissionGrantsForSelf.microsoft-user-default-recommended" ]
+                        else
+                            []
+                }
+        }
 
 // ---------------------------------------------------------------------------------------------
 // Conditional Access policies that target an authentication context, in Graph's wire format (DTOs).
@@ -601,6 +654,21 @@ let private groupLicence (scripts: Scripts) (groups: Map<GroupName, Group>) (l: 
         CustomResourceOptions(DeleteBeforeReplace = true)
     )
 
+/// The tenant's authorization policy, set by `script` (scripts/tenant-authorization-policy.sh) on apply and
+/// read back. Removing it from the plan leaves the tenant as it is.
+let private tenantDefaults (script: string) (t: TenantDefaults) =
+    let body = authorizationPolicyBody t
+
+    Command(
+        "tenant-authorization-policy",
+        CommandArgs(
+            Create = script,
+            Interpreter = inputList [ input "/bin/bash"; input "-c" ],
+            Environment = inputMap [ "POLICY", input body ],
+            Triggers = inputList [ input (box body); input (box script) ]
+        )
+    )
+
 /// A Conditional Access policy that targets an authentication context, plus the context itself, set by
 /// scripts/ca-context-policy.sh on apply. Deleting the resource deletes the policy (the context stays).
 let private contextPolicy
@@ -832,4 +900,5 @@ let deploy (scripts: Scripts) (plan: Plan) : Deployed =
         agents = agentUsers |> Map.toList |> List.map snd
         agentDirectoryRoles = plan.agentDirectoryRoles |> List.map (agentDirectoryRole agentUsers)
         licences = plan.licences |> List.map (groupLicence scripts groups)
+        tenantDefaults = tenantDefaults scripts.tenantAuthorizationPolicy plan.tenantDefaults
     }
