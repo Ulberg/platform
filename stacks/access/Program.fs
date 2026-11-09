@@ -26,7 +26,7 @@ let private run () =
             File.ReadAllText(Path.Combine(platformRoot, "access", "people.yaml"))
 
         let policyScript =
-            File.ReadAllText(Path.Combine(platformRoot, "stacks", "access", "scripts", "pim-directory-role-rule.sh"))
+            File.ReadAllText(Path.Combine(platformRoot, "stacks", "access", "scripts", "pim-directory-role-policy.sh"))
 
         let subscriptionId = Config("azure-native").Require "subscriptionId"
 
@@ -75,7 +75,7 @@ let private run () =
                     $"access: {entra.groups.Count} groups, {entra.members.Length} memberships, "
                     + $"{entra.eligibilities.Length} PIM group eligibilities, "
                     + $"{entra.directoryRoleEligibilities.Length} PIM directory-role eligibilities "
-                    + $"({entra.directoryRolePolicies.Length} policy rules), {roles.Length} Azure role assignments, "
+                    + $"({entra.directoryRolePolicies.Length} PIM policies), {roles.Length} Azure role assignments, "
                     + $"{entra.conditionalAccess.Length} Conditional Access policies, {github.rulesets.Length} rulesets, "
                     + $"{github.collaborators.Length} collaborators, {github.environments.Length} environments"
                 )
