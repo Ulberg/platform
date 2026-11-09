@@ -164,26 +164,23 @@ let private eligibility
         CustomResourceOptions(DependsOn = InputList.op_Implicit (policy :> Resource))
     )
 
-/// One PIM policy rule, set by `script` (scripts/pim-directory-role-rule.sh) on apply. A changed rule or
-/// script replaces the resource, which runs it again; removing it from the plan leaves the rule as it is.
-let private policyRule (script: string) (pim: DirectoryRolePim) (ruleId: string, body: string) =
+/// A directory role's PIM policy, set by `script` (scripts/pim-directory-role-policy.sh) on apply. A changed
+/// rule or script replaces the resource, which runs it again; removing it from the plan leaves the policy as
+/// it is. One resource per role, because the rules have to be set one after another.
+let private rolePolicy (script: string) (pim: DirectoryRolePim) =
+    let rules = policyRules pim |> List.map snd |> String.concat "," |> sprintf "[%s]"
+
     Command(
-        $"{DirectoryRole.value pim.role}-pim-{ruleId}",
+        $"{DirectoryRole.value pim.role}-pim-policy",
         CommandArgs(
             Create = script,
             Interpreter = inputList [ input "/bin/bash"; input "-c" ],
-            Environment =
-                inputMap
-                    [
-                        "ROLE_ID", input (DirectoryRole.templateId pim.role)
-                        "RULE_ID", input ruleId
-                        "BODY", input body
-                    ],
-            Triggers = inputList [ input (box body); input (box script) ]
+            Environment = inputMap [ "ROLE_ID", input (DirectoryRole.templateId pim.role); "RULES", input rules ],
+            Triggers = inputList [ input (box rules); input (box script) ]
         )
     )
 
-let private roleEligibility (rules: Command list) (pim: DirectoryRolePim) (p: Person) =
+let private roleEligibility (policy: Command) (pim: DirectoryRolePim) (p: Person) =
     DirectoryRoleEligibilityScheduleRequest(
         $"{DirectoryRole.value pim.role}-eligible-{Person.key p}",
         DirectoryRoleEligibilityScheduleRequestArgs(
@@ -193,7 +190,7 @@ let private roleEligibility (rules: Command list) (pim: DirectoryRolePim) (p: Pe
             Justification = "Generated from access/people.yaml"
         ),
         // The policy must allow permanent eligibility before this request is made.
-        CustomResourceOptions(DependsOn = inputList [ for r in rules -> input (r :> Resource) ])
+        CustomResourceOptions(DependsOn = InputList.op_Implicit (policy :> Resource))
     )
 
 let private caPolicy (groups: Map<GroupName, Group>) (p: CaPolicy) =
@@ -241,14 +238,13 @@ let private caPolicy (groups: Map<GroupName, Group>) (p: CaPolicy) =
         )
     )
 
-/// `policyScript` is the text of scripts/pim-directory-role-rule.sh.
+/// `policyScript` is the text of scripts/pim-directory-role-policy.sh.
 let deploy (policyScript: string) (plan: Plan) : Deployed =
     let groups = plan.groups |> List.map (fun name -> name, group name) |> Map.ofList
     let policies = plan.pim |> List.map (fun rule -> rule, pimPolicy groups rule)
 
-    let roleRules =
-        plan.directoryRoles
-        |> List.map (fun pim -> pim, policyRules pim |> List.map (policyRule policyScript pim))
+    let rolePolicies =
+        plan.directoryRoles |> List.map (fun pim -> pim, rolePolicy policyScript pim)
 
     {
         groups = groups
@@ -257,9 +253,9 @@ let deploy (policyScript: string) (plan: Plan) : Deployed =
         eligibilities =
             policies
             |> List.collect (fun (rule, policy) -> rule.eligible |> List.map (eligibility groups policy rule))
-        directoryRolePolicies = roleRules |> List.collect snd
+        directoryRolePolicies = rolePolicies |> List.map snd
         directoryRoleEligibilities =
-            roleRules
-            |> List.collect (fun (pim, rules) -> pim.eligible |> List.map (roleEligibility rules pim))
+            rolePolicies
+            |> List.collect (fun (pim, policy) -> pim.eligible |> List.map (roleEligibility policy pim))
         conditionalAccess = plan.conditionalAccess |> List.map (caPolicy groups)
     }
