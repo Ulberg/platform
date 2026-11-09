@@ -57,7 +57,7 @@ GitHub's OIDC subject includes the owner and repo **IDs**, so a renamed or recre
 
 **Be aware:** `id-platform-apply` can manage groups, apps, PIM and Conditional Access, which makes it effectively a tenant admin. The protection is that only a run in the `dev` environment, which needs a platform lead's approval and only deploys from `main`, can get a token for it.
 
-The admin account also gets standing *Storage Blob Data Contributor* on the state account and *Key Vault Crypto Officer* on the vault, so it can create the container and key. Pulumi moves these to PIM-eligible later.
+The admin account also gets standing *Storage Blob Data Contributor* on the state account and *Key Vault Crypto Officer* on the vault, so it can create the container and key. These, the admin's subscription Owner and Global Admin, and the owner account's Global Admin and Owner are all temporary: once the `access` stack is applied, `.github/workflows/remove-standing-access.yml` removes them (D35, D36), and from then on Global Admin is PIM-only and subscription Owner is held only by the emergency accounts. Re-running this script as the admin would need those roles again, so after Phase 0 it is only run by an emergency account.
 
 Verified after the run: `pulumi login azblob://pulumi?storage_account=stplatform21784576` works with Entra sign-in only (no storage keys).
 

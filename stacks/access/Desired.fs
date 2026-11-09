@@ -89,15 +89,24 @@ type DirectoryRolePim =
 // ---------------------------------------------------------------------------------------------
 // Azure RBAC
 
-type AzureRole = | Reader
+type AzureRole =
+    | Reader
+    | Owner
 
 module AzureRole =
     let definitionId =
         function
         | Reader -> "acdd72a7-3385-48ef-bd42-f606fba81ae7"
+        | Owner -> "8e3af657-a8ff-443c-a75c-2fe8c4bcb635"
+
+[<RequireQualifiedAccess>]
+type Grantee =
+    | Group of GroupName
+    /// An emergency-access account from people.yaml (D36).
+    | EmergencyAccount of EntraObjectId
 
 /// A role on the whole subscription. Write roles on app resource groups come in Phase 3.
-type RoleGrant = { group: GroupName; role: AzureRole }
+type RoleGrant = { grantee: Grantee; role: AzureRole }
 
 // ---------------------------------------------------------------------------------------------
 // Conditional Access
@@ -315,7 +324,19 @@ let plan (owner: GitHubHandle) (caState: CaState option) (access: Access) : Resu
                             eligible = access.platformLeads
                         }
                     ]
-                roleAssignments = [ { group = PlatformRead; role = Reader } ]
+                // Subscription Owner only through the emergency accounts (D36); nobody else holds it standing.
+                roleAssignments =
+                    {
+                        grantee = Grantee.Group PlatformRead
+                        role = Reader
+                    }
+                    :: [
+                        for id in access.emergencyAccess ->
+                            {
+                                grantee = Grantee.EmergencyAccount id
+                                role = Owner
+                            }
+                    ]
                 conditionalAccess = conditionalAccess caState access
                 rulesets = rulesets
                 collaborators = collaborators owner access

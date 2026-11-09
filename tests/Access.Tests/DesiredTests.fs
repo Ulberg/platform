@@ -63,8 +63,22 @@ let tests =
                 Expect.equal roles [ GlobalAdministrator, 1, [ "ann" ] ] "directory roles"
             }
 
-            test "only platform-read has a standing Azure role, and it is Reader" {
-                Expect.equal (planWith None).roleAssignments [ { group = PlatformRead; role = Reader } ] "roles"
+            test "standing Azure roles: Reader for platform-read, Owner only for the emergency accounts" {
+                let roles =
+                    (planWith None).roleAssignments
+                    |> List.map (fun g ->
+                        match g.grantee with
+                        | Grantee.Group group -> GroupName.value group, g.role
+                        | Grantee.EmergencyAccount id -> EntraObjectId.string id, g.role)
+
+                Expect.equal
+                    roles
+                    [
+                        "platform-read", Reader
+                        "33333333-3333-3333-3333-333333333333", Owner
+                        "44444444-4444-4444-4444-444444444444", Owner
+                    ]
+                    "roles"
             }
 
             test "Conditional Access off means no policies" {
