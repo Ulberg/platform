@@ -55,6 +55,14 @@ let tests =
                 Expect.equal pim [ PlatformWrite, 2, [ "ann" ]; PlatformAdmin, 1, [ "ann" ] ] "PIM rules"
             }
 
+            test "Global Admin is PIM-only for platform leads (1 h)" {
+                let roles =
+                    (planWith None).directoryRoles
+                    |> List.map (fun r -> r.role, r.maxHours, keys r.eligible)
+
+                Expect.equal roles [ GlobalAdministrator, 1, [ "ann" ] ] "directory roles"
+            }
+
             test "only platform-read has a standing Azure role, and it is Reader" {
                 Expect.equal (planWith None).roleAssignments [ { group = PlatformRead; role = Reader } ] "roles"
             }

@@ -25,6 +25,9 @@ let private run () =
         let peopleYaml =
             File.ReadAllText(Path.Combine(platformRoot, "access", "people.yaml"))
 
+        let policyScript =
+            File.ReadAllText(Path.Combine(platformRoot, "stacks", "access", "scripts", "pim-directory-role-rule.sh"))
+
         let subscriptionId = Config("azure-native").Require "subscriptionId"
 
         // 2. Domain model and plan (pure)
@@ -63,14 +66,16 @@ let private run () =
             | Error errors -> return fail errors
             | Ok() ->
                 // 3. Action
-                let entra = Entra.deploy plan
+                let entra = Entra.deploy policyScript plan
                 let roles = AzureRbac.deploy subscriptionId entra.groups plan
                 let github = GitHub.deploy plan
 
                 // 4. Report
                 Log.Info(
                     $"access: {entra.groups.Count} groups, {entra.members.Length} memberships, "
-                    + $"{entra.eligibilities.Length} PIM eligibilities, {roles.Length} Azure role assignments, "
+                    + $"{entra.eligibilities.Length} PIM group eligibilities, "
+                    + $"{entra.directoryRoleEligibilities.Length} PIM directory-role eligibilities "
+                    + $"({entra.directoryRolePolicies.Length} policy rules), {roles.Length} Azure role assignments, "
                     + $"{entra.conditionalAccess.Length} Conditional Access policies, {github.rulesets.Length} rulesets, "
                     + $"{github.collaborators.Length} collaborators, {github.environments.Length} environments"
                 )
