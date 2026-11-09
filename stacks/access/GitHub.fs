@@ -83,11 +83,14 @@ let private ruleset (repo: string) =
     )
     |> ignore
 
-let private collaborators (owner: string) (repo: string) (people: Person list) =
-    for p in people |> List.distinct |> List.filter (fun p -> p.GitHub <> owner) do
+let private collaborators (owner: GitHubHandle) (repo: string) (people: Person list) =
+    for p in
+        people
+        |> List.distinct
+        |> List.filter (fun p -> not (GitHubHandle.same p.github owner)) do
         RepositoryCollaborator(
-            $"{repo}-{p.Key}",
-            RepositoryCollaboratorArgs(Repository = repo, Username = p.GitHub, Permission = "push")
+            $"{repo}-{Person.key p}",
+            RepositoryCollaboratorArgs(Repository = repo, Username = GitHubHandle.value p.github, Permission = "push")
         )
         |> ignore
 
@@ -96,7 +99,8 @@ let private collaborators (owner: string) (repo: string) (people: Person list) =
 let private environment (repo: string) (name: string) (branchPolicyId: int) (reviewers: Person list) =
     let reviewerIds =
         reviewers
-        |> List.map (fun p -> GetUser.Invoke(GetUserInvokeArgs(Username = p.GitHub)).Apply(fun u -> int u.Id))
+        |> List.map (fun p ->
+            GetUser.Invoke(GetUserInvokeArgs(Username = GitHubHandle.value p.github)).Apply(fun u -> int u.Id))
         |> Output.All
 
     let env =
@@ -133,20 +137,21 @@ let private environment (repo: string) (name: string) (branchPolicyId: int) (rev
     )
     |> ignore
 
-let repos (owner: string) (access: Access) =
-    for KeyValue(repo, leads) in access.RepoLeads do
+let repos (owner: GitHubHandle) (access: Access) =
+    for KeyValue(name, leads) in access.repoLeads do
+        let repo = RepoName.value name
         ruleset repo
 
         let developers =
-            if repo = "platform" then
-                access.InfraDevelopers
+            if name = RepoName.platform then
+                access.infraDevelopers
             else
-                access.InfraDevelopers @ access.AppDevelopers
+                access.infraDevelopers @ access.appDevelopers
 
         collaborators owner repo (leads @ developers)
 
     // Applies need a platform lead's approval; app releases (the pr-bot) run from main only.
-    environment "platform" "dev" 65981291 access.PlatformLeads
+    environment "platform" "dev" 65981291 access.platformLeads
     environment "todo" "release" 65981293 []
 
 /// Fails the run if a repo's CODEOWNERS doesn't match its leads. Committed files rather than a bot push,
@@ -156,11 +161,12 @@ let checkCodeowners (platformRoot: string) (access: Access) : Task<unit> =
     task {
         let mutable errors = []
 
-        for KeyValue(repo, leads) in access.RepoLeads do
+        for KeyValue(name, leads) in access.repoLeads do
+            let repo = RepoName.value name
             let expected = codeowners leads
 
             let! actual =
-                if repo = "platform" then
+                if name = RepoName.platform then
                     Task.FromResult(Some(File.ReadAllText(Path.Combine(platformRoot, ".github", "CODEOWNERS"))))
                 else
                     task {

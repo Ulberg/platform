@@ -1,150 +1,248 @@
-/// Parses access/people.yaml into a checked model. Everything downstream only sees `Access`,
-/// so a typo in the YAML fails here instead of producing half an access setup.
+/// access/people.yaml: the file as written (DTO) → the checked access model (domain).
+/// Parse, don't validate: everything downstream only sees `Access`, so a typo in the YAML fails
+/// here instead of producing half an access setup.
 module Platform.Access.People
 
 open System
+open System.Collections.Generic
 open System.IO
+open System.Text.RegularExpressions
 open FsToolkit.ErrorHandling
-open YamlDotNet.RepresentationModel
+open FsToolkit.ErrorHandling.Operator.Validation
+open YamlDotNet.Serialization
+
+// ---------------------------------------------------------------------------------------------
+// Domain
+
+type PersonKey = private PersonKey of string
+
+module PersonKey =
+    let parse s =
+        Parse.notEmpty "person" s |> Result.map PersonKey
+
+    let value (PersonKey key) = key
+
+type GitHubHandle = private GitHubHandle of string
+
+module GitHubHandle =
+    // GitHub's rules: 1–39 letters, digits or single hyphens, not starting or ending with a hyphen.
+    let private pattern = Regex "^[A-Za-z0-9](-?[A-Za-z0-9]){0,38}$"
+
+    let parse s =
+        Parse.notEmpty "github" s
+        |> Result.bind (Parse.matches pattern "github")
+        |> Result.map GitHubHandle
+
+    let value (GitHubHandle handle) = handle
+
+    /// GitHub handles are case-insensitive.
+    let same (GitHubHandle a) (GitHubHandle b) =
+        String.Equals(a, b, StringComparison.OrdinalIgnoreCase)
+
+type EntraObjectId = private EntraObjectId of Guid
+
+module EntraObjectId =
+    let parse field s =
+        Parse.notEmpty field s
+        |> Result.bind (Parse.guid field)
+        |> Result.map EntraObjectId
+
+    let string (EntraObjectId id) = id.ToString()
+
+type RepoName = private RepoName of string
+
+module RepoName =
+    let platform = RepoName "platform"
+
+    let parse s =
+        Parse.notEmpty "repo" s |> Result.map RepoName
+
+    let value (RepoName name) = name
 
 type Person =
     {
-        Key: string
-        GitHub: string
-        EntraObjectId: Guid
+        key: PersonKey
+        github: GitHubHandle
+        entra: EntraObjectId
     }
+
+module Person =
+    let create key github entra =
+        {
+            key = key
+            github = github
+            entra = entra
+        }
+
+    let key p = PersonKey.value p.key
 
 type Access =
     {
-        People: Person list
-        InfraDevelopers: Person list
-        AppDevelopers: Person list
-        /// Repo name → its leads (code owners). Every repo has at least one.
-        RepoLeads: Map<string, Person list>
-        EmergencyAccess: Guid list
+        people: Person list
+        infraDevelopers: Person list
+        appDevelopers: Person list
+        /// Code owners of each repo. Every repo has at least one, and `platform` is always present.
+        repoLeads: Map<RepoName, Person list>
+        platformLeads: Person list
+        emergencyAccess: EntraObjectId list
     }
 
-    member this.PlatformLeads = this.RepoLeads["platform"]
+module Access =
+    let create people infraDevelopers appDevelopers repoLeads emergencyAccess =
+        {
+            people = people
+            infraDevelopers = infraDevelopers
+            appDevelopers = appDevelopers
+            repoLeads = repoLeads
+            platformLeads = Map.find RepoName.platform repoLeads
+            emergencyAccess = emergencyAccess
+        }
 
-let private requiredGroups = [ "infra-developers"; "app-developers" ]
+// ---------------------------------------------------------------------------------------------
+// DTO: the file exactly as written. Anything can be missing, so every field is nullable.
 
-let private person (key: YamlNode, value: YamlNode) =
-    validation {
-        let! key = Yaml.scalar key
-        let! fields = Yaml.mapping value |> Yaml.within key
-
-        let! github =
-            Yaml.field "github" fields |> Validation.bind Yaml.scalar |> Yaml.within key
-
-        and! entra =
-            Yaml.field "entra" fields
-            |> Validation.bind Yaml.scalar
-            |> Validation.bind Yaml.guid
-            |> Yaml.within key
-
-        return
-            {
-                Key = key
-                GitHub = github
-                EntraObjectId = entra
-            }
+[<CLIMutable>]
+type PersonDto =
+    {
+        github: string | null
+        entra: string | null
     }
+
+[<CLIMutable>]
+type PeopleFileDto =
+    {
+        people: Dictionary<string, PersonDto> | null
+        groups: Dictionary<string, string array | null> | null
+        [<YamlMember(Alias = "repo-leads")>]
+        repoLeads: Dictionary<string, string array | null> | null
+        [<YamlMember(Alias = "emergency-access")>]
+        emergencyAccess: string array | null
+    }
+
+// ---------------------------------------------------------------------------------------------
+// DTO → domain
+
+let private infraDevelopers = "infra-developers"
+let private appDevelopers = "app-developers"
+
+let private person (KeyValue(key: string, dto: PersonDto)) : Validation<Person, string> =
+    match box dto with
+    | null -> Validation.error $"people.{key}: needs 'github' and 'entra'"
+    | _ ->
+        Person.create <!^> PersonKey.parse key
+        <*^> GitHubHandle.parse dto.github
+        <*^> EntraObjectId.parse "entra" dto.entra
+        |> Parse.within $"people.{key}"
 
 let private uniqueGitHub (people: Person list) : Validation<unit, string> =
     match
         people
-        |> List.countBy (fun p -> p.GitHub.ToLowerInvariant())
-        |> List.filter (fun (_, n) -> n > 1)
+        |> List.countBy (fun p -> (GitHubHandle.value p.github).ToLowerInvariant())
+        |> List.filter (snd >> (<) 1)
     with
     | [] -> Ok()
-    | dups -> Error [ for g, _ in dups -> $"people: github handle '{g}' is used more than once" ]
+    | dups ->
+        Error
+            [
+                for handle, _ in dups -> $"people: github handle '{handle}' is used more than once"
+            ]
 
-let private members (people: Person list) (node: YamlNode) =
+/// Names → people. Every name must be defined under `people`, and the list can't be empty.
+let private resolve (people: Person list) (context: string) (names: string array | null) =
+    let find name =
+        people
+        |> List.tryFind (fun p -> Person.key p = name)
+        |> Result.requireSome $"unknown person '{name}'"
+        |> Validation.ofResult
+
+    match names with
+    | null -> Validation.error "needs at least one person"
+    | names ->
+        names
+        |> List.ofArray
+        |> List.traverseValidationA find
+        |> Validation.bind (fun found ->
+            found
+            |> Result.requireNotEmpty "needs at least one person"
+            |> Validation.ofResult
+            |> Validation.map (fun () -> List.distinct found))
+    |> Parse.within context
+
+let private groups people (dto: Dictionary<string, string array | null>) =
+    let group name =
+        match dto.TryGetValue name with
+        | true, members -> resolve people $"groups.{name}" members
+        | _ -> Validation.error $"groups: missing '{name}'"
+
+    let unknown =
+        [
+            for name in dto.Keys do
+                if name <> infraDevelopers && name <> appDevelopers then
+                    $"groups: unknown group '{name}'"
+        ]
+
     validation {
-        let! names = Yaml.sequence node
-
-        let! found =
-            names
-            |> List.traverseValidationA (fun n ->
-                Yaml.scalar n
-                |> Validation.bind (fun name ->
-                    people
-                    |> List.tryFind (fun p -> p.Key = name)
-                    |> Result.requireSome $"unknown person '{name}'"
-                    |> Validation.ofResult))
-
-        do! found |> Result.requireNotEmpty "needs at least one person"
-        return List.distinct found
+        let! infra = group infraDevelopers
+        and! app = group appDevelopers
+        and! () = if List.isEmpty unknown then Ok() else Error unknown
+        return infra, app
     }
 
-/// A section like `groups:` or `repo-leads:`: names mapped to lists of people.
-let private namedLists people section root =
-    validation {
-        let! entries = Yaml.field section root |> Validation.bind Yaml.mapping
+let private repoLeads people (dto: Dictionary<string, string array | null>) =
+    let repo (KeyValue(name, leads)) =
+        (fun repo leads -> repo, leads) <!^> RepoName.parse name
+        <*> resolve people $"repo-leads.{name}" leads
 
-        let! lists =
-            entries
-            |> List.traverseValidationA (fun (k, v) ->
-                Yaml.scalar k
-                |> Validation.bind (fun name ->
-                    members people v
-                    |> Yaml.within $"{section}.{name}"
-                    |> Validation.map (fun list -> name, list)))
-
-        return Map.ofList lists
-    }
-
-let private requireKeys section keys (map: Map<string, 'a>) =
-    keys
-    |> List.traverseValidationA (fun k ->
-        if map.ContainsKey k then
-            Ok()
+    dto
+    |> List.ofSeq
+    |> List.traverseValidationA repo
+    |> Validation.map Map.ofList
+    |> Validation.bind (fun leads ->
+        if leads.ContainsKey RepoName.platform then
+            Ok leads
         else
-            Validation.error $"{section}: missing '{k}'")
-    |> Validation.map (fun _ -> map)
+            Validation.error "repo-leads: missing 'platform'")
 
-let private emergencyAccess root =
-    Yaml.field "emergency-access" root
-    |> Validation.bind Yaml.sequence
-    |> Validation.bind (List.traverseValidationA (Yaml.scalar >> Validation.bind Yaml.guid))
+let private emergencyAccess (ids: string array) =
+    ids
+    |> List.ofArray
+    |> List.traverseValidationA (EntraObjectId.parse "emergency-access" >> Validation.ofResult)
     |> Validation.bind (fun ids ->
         if List.length ids >= 2 then
             Ok ids
         else
-            Validation.error "needs two accounts")
-    |> Yaml.within "emergency-access"
+            Validation.error "emergency-access: needs two accounts")
 
-let parse (yaml: string) : Validation<Access, string> =
+let fromDto (dto: PeopleFileDto) : Validation<Access, string> =
     validation {
-        let! root = Yaml.parseDocument yaml |> Validation.bind Yaml.mapping
-
         let! people =
-            Yaml.field "people" root
-            |> Validation.bind Yaml.mapping
-            |> Validation.bind (List.traverseValidationA person)
+            Parse.required "people" dto.people
+            |> Validation.ofResult
+            |> Validation.bind (List.ofSeq >> List.traverseValidationA person)
 
         // The sections are independent (and!), so one run reports every problem in the file.
-        let! _ = uniqueGitHub people
+        let! () = uniqueGitHub people
 
-        and! groups =
-            namedLists people "groups" root
-            |> Validation.bind (requireKeys "groups" requiredGroups)
+        and! infra, app =
+            Parse.required "groups" dto.groups
+            |> Validation.ofResult
+            |> Validation.bind (groups people)
 
-        and! repoLeads =
-            namedLists people "repo-leads" root
-            |> Validation.bind (requireKeys "repo-leads" [ "platform" ])
+        and! leads =
+            Parse.required "repo-leads" dto.repoLeads
+            |> Validation.ofResult
+            |> Validation.bind (repoLeads people)
 
-        and! emergency = emergencyAccess root
+        and! emergency =
+            Parse.required "emergency-access" dto.emergencyAccess
+            |> Validation.ofResult
+            |> Validation.bind emergencyAccess
 
-        return
-            {
-                People = people
-                InfraDevelopers = groups["infra-developers"]
-                AppDevelopers = groups["app-developers"]
-                RepoLeads = repoLeads
-                EmergencyAccess = emergency
-            }
+        return Access.create people infra app leads emergency
     }
+
+let parse (yaml: string) : Validation<Access, string> =
+    Parse.yaml<PeopleFileDto> yaml |> Validation.bind fromDto
 
 let load path =
     match parse (File.ReadAllText path) with
@@ -153,6 +251,9 @@ let load path =
 
 /// The CODEOWNERS file every repo must contain: everything is owned by the repo's leads.
 let codeowners (leads: Person list) =
-    let owners = leads |> List.map (fun p -> "@" + p.GitHub) |> String.concat " "
+    let owners =
+        leads
+        |> List.map (fun p -> "@" + GitHubHandle.value p.github)
+        |> String.concat " "
 
     $"# Generated from Ulberg/platform access/people.yaml (repo-leads). Change it there, not here.\n* {owners}\n"

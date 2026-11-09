@@ -15,7 +15,7 @@ let assign (subscriptionId: string) (g: Groups) =
         RoleAssignmentArgs(
             Scope = scope,
             RoleDefinitionId = $"{scope}/providers/Microsoft.Authorization/roleDefinitions/{reader}",
-            PrincipalId = g.PlatformRead.ObjectId,
+            PrincipalId = g.platformRead.ObjectId,
             PrincipalType = PrincipalType.Group,
             Description = "platform-read: standing read on the subscription (access/people.yaml)"
         )

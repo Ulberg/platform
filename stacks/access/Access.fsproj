@@ -3,7 +3,7 @@
     <OutputType>Exe</OutputType>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="Yaml.fs" />
+    <Compile Include="Parse.fs" />
     <Compile Include="People.fs" />
     <Compile Include="Entra.fs" />
     <Compile Include="AzureRbac.fs" />

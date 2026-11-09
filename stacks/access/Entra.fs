@@ -9,14 +9,14 @@ open Platform.Access.People
 
 type Groups =
     {
-        InfraDevelopers: Group
-        AppDevelopers: Group
+        infraDevelopers: Group
+        appDevelopers: Group
         /// Standing read access. Infra developers are members.
-        PlatformRead: Group
+        platformRead: Group
         /// Break-glass write. Only reachable by activating PIM, max 2 h.
-        PlatformWrite: Group
+        platformWrite: Group
         /// Admin. Only reachable by activating PIM, max 1 h, platform leads only.
-        PlatformAdmin: Group
+        platformAdmin: Group
     }
 
 let private group (name: string) (description: string) =
@@ -41,23 +41,23 @@ let private nest (outer: Group) (inner: Group) (innerName: string) =
 let groups (access: Access) =
     let g =
         {
-            InfraDevelopers = group "infra-developers" "Infra developers (access/people.yaml). Standing read only."
-            AppDevelopers = group "app-developers" "App developers (access/people.yaml). App logs, metrics and traces."
-            PlatformRead = group "platform-read" "Read on Azure, AKS and the DB. Contains platform-write."
-            PlatformWrite = group "platform-write" "Break-glass write. PIM only (max 2 h). Contains platform-admin."
-            PlatformAdmin = group "platform-admin" "Platform admin. PIM only (max 1 h), platform leads only."
+            infraDevelopers = group "infra-developers" "Infra developers (access/people.yaml). Standing read only."
+            appDevelopers = group "app-developers" "App developers (access/people.yaml). App logs, metrics and traces."
+            platformRead = group "platform-read" "Read on Azure, AKS and the DB. Contains platform-write."
+            platformWrite = group "platform-write" "Break-glass write. PIM only (max 2 h). Contains platform-admin."
+            platformAdmin = group "platform-admin" "Platform admin. PIM only (max 1 h), platform leads only."
         }
 
-    for p in access.InfraDevelopers do
-        memberOf g.InfraDevelopers $"infra-developers-{p.Key}" (input (string p.EntraObjectId))
+    for p in access.infraDevelopers do
+        memberOf g.infraDevelopers $"infra-developers-{Person.key p}" (input (EntraObjectId.string p.entra))
 
-    for p in access.AppDevelopers do
-        memberOf g.AppDevelopers $"app-developers-{p.Key}" (input (string p.EntraObjectId))
+    for p in access.appDevelopers do
+        memberOf g.appDevelopers $"app-developers-{Person.key p}" (input (EntraObjectId.string p.entra))
 
     // read ⊃ write ⊃ admin, so each consumer only maps three levels.
-    nest g.PlatformRead g.InfraDevelopers "infra-developers"
-    nest g.PlatformRead g.PlatformWrite "platform-write"
-    nest g.PlatformWrite g.PlatformAdmin "platform-admin"
+    nest g.platformRead g.infraDevelopers "infra-developers"
+    nest g.platformRead g.platformWrite "platform-write"
+    nest g.platformWrite g.platformAdmin "platform-admin"
     g
 
 /// PIM for Groups: membership is eligible only, activated with MFA + justification, time-boxed.
@@ -91,10 +91,10 @@ let private pimGroup (group: Group) (name: string) maxHours (eligible: Person li
 
     for p in eligible do
         PrivilegedAccessGroupEligibilitySchedule(
-            $"{name}-eligible-{p.Key}",
+            $"{name}-eligible-{Person.key p}",
             PrivilegedAccessGroupEligibilityScheduleArgs(
                 GroupId = group.ObjectId,
-                PrincipalId = string p.EntraObjectId,
+                PrincipalId = EntraObjectId.string p.entra,
                 AssignmentType = "member",
                 PermanentAssignment = true,
                 Justification = "Generated from access/people.yaml"
@@ -104,8 +104,8 @@ let private pimGroup (group: Group) (name: string) maxHours (eligible: Person li
         |> ignore
 
 let pim (access: Access) (g: Groups) =
-    pimGroup g.PlatformWrite "platform-write" 2 access.InfraDevelopers
-    pimGroup g.PlatformAdmin "platform-admin" 1 access.PlatformLeads
+    pimGroup g.platformWrite "platform-write" 2 access.infraDevelopers
+    pimGroup g.platformAdmin "platform-admin" 1 access.platformLeads
 
 type ConditionalAccessMode =
     | Off
@@ -134,7 +134,7 @@ let conditionalAccess (mode: ConditionalAccessMode) (access: Access) (g: Groups)
         | ReportOnly -> Some "enabledForReportingButNotEnforced"
         | Enforced -> Some "enabled"
 
-    let excluded = access.EmergencyAccess |> List.map string
+    let excluded = access.emergencyAccess |> List.map EntraObjectId.string
 
     let policy
         name
@@ -206,7 +206,7 @@ let conditionalAccess (mode: ConditionalAccessMode) (access: Access) (g: Groups)
             Users =
                 users (
                     ConditionalAccessPolicyConditionsUsersArgs(
-                        IncludedGroups = inputList [ io g.InfraDevelopers.ObjectId ]
+                        IncludedGroups = inputList [ io g.infraDevelopers.ObjectId ]
                     )
                 )
         ))

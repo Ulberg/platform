@@ -14,7 +14,11 @@ let private run () =
 
         let access = People.load (Path.Combine(platformRoot, "access", "people.yaml"))
         let subscriptionId = Config("azure-native").Require "subscriptionId"
-        let owner = Config("github").Require "owner"
+
+        let owner =
+            Config("github").Require "owner"
+            |> People.GitHubHandle.parse
+            |> Result.defaultWith (failwithf "github:owner: %s")
 
         do! GitHub.checkCodeowners platformRoot access
 
@@ -27,11 +31,11 @@ let private run () =
         return
             dict
                 [
-                    "platformRead", groups.PlatformRead.ObjectId :> obj
-                    "platformWrite", groups.PlatformWrite.ObjectId :> obj
-                    "platformAdmin", groups.PlatformAdmin.ObjectId :> obj
-                    "infraDevelopers", groups.InfraDevelopers.ObjectId :> obj
-                    "appDevelopers", groups.AppDevelopers.ObjectId :> obj
+                    "platformRead", groups.platformRead.ObjectId :> obj
+                    "platformWrite", groups.platformWrite.ObjectId :> obj
+                    "platformAdmin", groups.platformAdmin.ObjectId :> obj
+                    "infraDevelopers", groups.infraDevelopers.ObjectId :> obj
+                    "appDevelopers", groups.appDevelopers.ObjectId :> obj
                 ]
     }
 
