@@ -8,6 +8,7 @@
     <Compile Include="DesiredTests.fs" />
     <Compile Include="CodeownersTests.fs" />
     <Compile Include="EntraTests.fs" />
+    <Compile Include="EmailTests.fs" />
     <Compile Include="Main.fs" />
   </ItemGroup>
   <ItemGroup>

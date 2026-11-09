@@ -30,6 +30,11 @@ let private run () =
 
         let subscriptionId = Config("azure-native").Require "subscriptionId"
 
+        // A GitHub secret, because the repo is public. Option.ofObj: .NET returns null for an unset variable.
+        let alertEmails =
+            System.Environment.GetEnvironmentVariable "PLATFORM_ALERT_EMAILS"
+            |> Option.ofObj
+
         // 2. Domain model and plan (pure)
         let planned =
             result {
@@ -45,7 +50,8 @@ let private run () =
                     |> CaState.parse
                     |> Result.mapError List.singleton
 
-                let! plan = Desired.plan owner caState access
+                let! emails = Email.parseList "PLATFORM_ALERT_EMAILS" alertEmails
+                let! plan = Desired.plan owner caState emails access
                 return access, plan
             }
 

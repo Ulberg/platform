@@ -7,6 +7,7 @@ open Platform.Access.Desired
 
 let private rules =
     Entra.policyRules
+        [ "lead@example.com" ]
         {
             role = GlobalAdministrator
             maxHours = 1
@@ -33,6 +34,9 @@ let tests =
                         "Expiration_Admin_Eligibility"
                         "Expiration_Admin_Assignment"
                         "Enablement_Admin_Assignment"
+                        "Notification_Admin_EndUser_Assignment"
+                        "Notification_Admin_Admin_Eligibility"
+                        "Notification_Admin_Admin_Assignment"
                     ]
                     "rule IDs"
             }
@@ -59,6 +63,18 @@ let tests =
                     (text "enabledRules" (rule "Enablement_Admin_Assignment"))
                     """["MultiFactorAuthentication","Justification"]"""
                     "enabled rules"
+            }
+
+            test "every activation and every new assignment emails the alert list" {
+                for id in
+                    [
+                        "Notification_Admin_EndUser_Assignment"
+                        "Notification_Admin_Admin_Eligibility"
+                        "Notification_Admin_Admin_Assignment"
+                    ] do
+                    let r = rule id
+                    Expect.equal (text "notificationLevel" r) "All" id
+                    Expect.equal (text "notificationRecipients" r) """["lead@example.com"]""" id
             }
 
             test "eligibility may be permanent" {
