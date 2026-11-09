@@ -141,6 +141,35 @@ module Licence =
 
 type GroupLicence = { group: GroupName; licence: Licence }
 
+// ---------------------------------------------------------------------------------------------
+// Tenant defaults
+
+/// What every member of the tenant (human or agent) may do on their own, without a role. Entra's defaults
+/// allow a lot; here nothing that creates is allowed: groups, apps and guests come from code (this stack),
+/// and apps get consent from an admin, not from users.
+type TenantDefaults =
+    {
+        usersCanCreateSecurityGroups: bool
+        usersCanCreateApps: bool
+        usersCanCreateTenants: bool
+        usersCanConsentToApps: bool
+        usersCanInviteGuests: bool
+        usersCanJoinByEmailDomain: bool
+        usersCanSignUpForTrials: bool
+    }
+
+module TenantDefaults =
+    let locked =
+        {
+            usersCanCreateSecurityGroups = false
+            usersCanCreateApps = false
+            usersCanCreateTenants = false
+            usersCanConsentToApps = false
+            usersCanInviteGuests = false
+            usersCanJoinByEmailDomain = false
+            usersCanSignUpForTrials = false
+        }
+
 /// PIM for a directory role: eligible only, activated with `activation` + justification for at most `maxHours`.
 type DirectoryRolePim =
     {
@@ -417,6 +446,7 @@ type Plan =
         agentDirectoryRoles: AgentDirectoryRole list
         tenantDomain: string
         licences: GroupLicence list
+        tenantDefaults: TenantDefaults
     }
 
 let private memberships (access: Access) =
@@ -579,6 +609,7 @@ let plan
                     ]
                 tenantDomain = tenantDomain
                 // Infra developers need P2 for PIM; agents get the same Conditional Access as humans (D41).
+                tenantDefaults = TenantDefaults.locked
                 licences =
                     [
                         {

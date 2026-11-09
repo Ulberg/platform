@@ -134,7 +134,7 @@ assign_role "$APPLY_PRINCIPAL" ServicePrincipal "Key Vault Crypto User" "$VAULT_
 grant_graph "$APPLY_PRINCIPAL" \
   Group.ReadWrite.All User.ReadWrite.All Application.ReadWrite.All \
   RoleManagement.ReadWrite.Directory PrivilegedAccess.ReadWrite.AzureADGroup RoleManagementPolicy.ReadWrite.AzureADGroup \
-  Policy.Read.All Policy.ReadWrite.ConditionalAccess
+  Policy.Read.All Policy.ReadWrite.ConditionalAccess Policy.ReadWrite.Authorization
 
 log "CI identity for pull-request previews ($PREVIEW_IDENTITY)"
 create_identity "$PREVIEW_IDENTITY" "$OIDC_REPO:pull_request"

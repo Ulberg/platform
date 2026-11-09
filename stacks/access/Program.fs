@@ -35,6 +35,7 @@ let private run () =
                 caContextPolicyDelete = script "ca-context-policy-delete.sh"
                 groupLicence = script "group-licence.sh"
                 groupLicenceDelete = script "group-licence-delete.sh"
+                tenantAuthorizationPolicy = script "tenant-authorization-policy.sh"
             }
 
         let subscriptionId = Config("azure-native").Require "subscriptionId"

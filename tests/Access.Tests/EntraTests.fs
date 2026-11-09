@@ -127,3 +127,37 @@ let tests =
                     Expect.stringStarts (text "@odata.type" body) "#microsoft.graph.unifiedRoleManagementPolicy" id
             }
         ]
+
+[<Tests>]
+let tenantDefaults =
+    testList
+        "tenant defaults"
+        [
+            test "members can't create groups, apps or tenants, consent to apps, invite guests or sign up" {
+                let policy =
+                    JsonDocument.Parse(Entra.authorizationPolicyBody TenantDefaults.locked).RootElement
+
+                let user = policy.GetProperty "defaultUserRolePermissions"
+
+                for name in
+                    [
+                        "allowedToCreateSecurityGroups"
+                        "allowedToCreateApps"
+                        "allowedToCreateTenants"
+                    ] do
+                    Expect.equal (text name user) "False" name
+
+                Expect.equal (text "permissionGrantPoliciesAssigned" user) "[]" "no user consent"
+                Expect.equal (text "allowInvitesFrom" policy) "adminsAndGuestInviters" "guests only by admins"
+                Expect.equal (text "allowEmailVerifiedUsersToJoinOrganization" policy) "False" "no joining by email"
+                Expect.equal (text "allowedToSignUpEmailBasedSubscriptions" policy) "False" "no self-service sign-ups"
+            }
+
+            test "members can still read other users (people pickers and PIM need it)" {
+                let user =
+                    JsonDocument.Parse(Entra.authorizationPolicyBody TenantDefaults.locked).RootElement.GetProperty
+                        "defaultUserRolePermissions"
+
+                Expect.equal (text "allowedToReadOtherUsers" user) "True" "read other users"
+            }
+        ]
