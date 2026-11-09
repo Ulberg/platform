@@ -38,6 +38,13 @@ jobs:
         run: python3 .github/scripts/check_prompt_log.py
       - name: Test the prompt-log hook
         run: python3 .claude/hooks/test_prompt_log.py
+      - name: Test the agent-identity hook (D41)
+        run: python3 .claude/hooks/test_agent_identity.py
+      - name: Agent-identity hook matches Ulberg/todo
+        run: |
+          for f in agent_identity.py test_agent_identity.py; do
+            curl -sSfL "https://raw.githubusercontent.com/Ulberg/todo/main/.claude/hooks/$f" | diff -u - ".claude/hooks/$f"
+          done
 
   dotnet:
     name: dotnet (format, build, test)

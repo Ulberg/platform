@@ -54,6 +54,8 @@ jobs:
         env:
           AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
         run: .github/scripts/check_standing_access.sh
+      - name: Agent access check (D41)
+        run: .github/scripts/check_agent_access.sh
       - name: GitHub token (read-only app)
         id: github
         uses: actions/create-github-app-token@v3
