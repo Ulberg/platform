@@ -30,7 +30,7 @@ let private run () =
 
         let scripts: Entra.Scripts =
             {
-                pimDirectoryRolePolicy = script "pim-directory-role-policy.sh"
+                pimPolicyRules = script "pim-policy-rules.sh"
                 caContextPolicy = script "ca-context-policy.sh"
                 caContextPolicyDelete = script "ca-context-policy-delete.sh"
             }
