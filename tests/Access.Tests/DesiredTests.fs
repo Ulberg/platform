@@ -7,7 +7,7 @@ open Platform.Access.Desired
 open Platform.Access.Tests.Fixtures
 
 let private planWith caState =
-    Desired.plan (github "owner-gh") caState (parsed valid) |> ok
+    Desired.plan (github "owner-gh") caState alertEmails (parsed valid) |> ok
 
 let private keys (people: Person list) = people |> List.map Person.key
 
@@ -95,7 +95,7 @@ let tests =
             }
 
             test "the owner is never added as a collaborator" {
-                let plan = Desired.plan (github "Ann-GH") None (parsed valid) |> ok
+                let plan = Desired.plan (github "Ann-GH") None alertEmails (parsed valid) |> ok
 
                 let collaborators =
                     plan.collaborators
@@ -106,7 +106,7 @@ let tests =
 
             test "a repo without required checks is an error, not a ruleset without checks" {
                 let yaml = valid.Replace("todo: [ann, bob]", "todo: [ann, bob]\n  other: [ann]")
-                let plan = Desired.plan (github "owner-gh") None (parsed yaml)
+                let plan = Desired.plan (github "owner-gh") None alertEmails (parsed yaml)
                 Expect.equal plan (Error [ "no required checks defined for repo 'other'" ]) "missing checks"
             }
 

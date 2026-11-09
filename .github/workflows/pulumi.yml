@@ -65,6 +65,8 @@ jobs:
           comment-on-summary: true
         env:
           GITHUB_TOKEN: ${{ steps.github.outputs.token }}
+          # PIM alert recipients (D40). A secret because the repo is public; the stack keeps it a Pulumi secret.
+          PLATFORM_ALERT_EMAILS: ${{ secrets.PLATFORM_ALERT_EMAILS }}
 
   apply:
     name: pulumi up
@@ -106,3 +108,5 @@ jobs:
           comment-on-summary: true
         env:
           GITHUB_TOKEN: ${{ steps.github.outputs.token }}
+          # PIM alert recipients (D40). A secret because the repo is public; the stack keeps it a Pulumi secret.
+          PLATFORM_ALERT_EMAILS: ${{ secrets.PLATFORM_ALERT_EMAILS }}

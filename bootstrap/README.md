@@ -32,6 +32,8 @@ Non-secret IDs live in [`config.env`](config.env). People live in [`../access/pe
 
 Workflows identify the apps by **client ID** (`actions/create-github-app-token` v3 deprecates app IDs).
 
+`PLATFORM_ALERT_EMAILS` (repo secret, platform) is the comma-separated list of addresses that get PIM alert emails (D40). It's a secret only because the repo is public; set it with `gh secret set PLATFORM_ALERT_EMAILS --repo Ulberg/platform`.
+
 All apps have webhooks off and can only be installed on this account. The keys were piped from 1Password straight into `gh secret set` and never printed. Rotate them every 6 months.
 
 ## Part C: run the bootstrap script (done 2026-11-08)

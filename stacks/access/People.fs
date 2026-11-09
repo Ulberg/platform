@@ -48,6 +48,34 @@ module EntraObjectId =
 
     let string (EntraObjectId id) = id.ToString()
 
+type Email = private Email of string
+
+module Email =
+    // Deliberately loose: one @, no spaces, a dot in the domain. Entra rejects what it can't deliver to.
+    let private pattern = Regex @"^[^@\s]+@[^@\s]+\.[^@\s]+$"
+
+    let value (Email e) = e
+
+    /// A comma-separated list from a secret. Errors name the position, never the value, so a bad entry
+    /// doesn't leak the others into logs.
+    let parseList (name: string) (raw: string option) : Result<Email list, string list> =
+        raw
+        |> Option.map (fun s ->
+            s.Split(',', StringSplitOptions.RemoveEmptyEntries ||| StringSplitOptions.TrimEntries)
+            |> List.ofArray)
+        |> Option.defaultValue []
+        |> List.mapi (fun i e ->
+            if pattern.IsMatch e then
+                Ok(Email e)
+            else
+                Error $"{name}: entry {i + 1} is not an email address")
+        |> List.sequenceResultA
+        |> Result.bind (fun emails ->
+            if List.isEmpty emails then
+                Error [ $"{name}: needs at least one address" ]
+            else
+                Ok emails)
+
 type RepoName = private RepoName of string
 
 module RepoName =

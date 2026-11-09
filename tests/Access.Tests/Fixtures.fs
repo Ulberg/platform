@@ -31,3 +31,6 @@ let repo name = RepoName.parse name |> ok
 let github handle = GitHubHandle.parse handle |> ok
 
 let platformRoot = Path.Combine(__SOURCE_DIRECTORY__, "..", "..")
+
+let alertEmails =
+    Email.parseList "alerts" (Some "lead@example.com, second@example.org") |> ok

@@ -48,6 +48,19 @@ type ExpirationRuleDto =
         target: RuleTargetDto
     }
 
+type NotificationRuleDto =
+    {
+        [<JsonPropertyName("@odata.type")>]
+        odataType: string
+        id: string
+        notificationType: string
+        recipientType: string
+        notificationLevel: string
+        isDefaultRecipientsEnabled: bool
+        notificationRecipients: string list
+        target: RuleTargetDto
+    }
+
 type EnablementRuleDto =
     {
         [<JsonPropertyName("@odata.type")>]
@@ -88,17 +101,36 @@ let private mfaAndJustification id target =
             target = target
         }
 
+/// Emails the admins (the role's default recipients plus `alertEmails`) about every event of `target`.
+let private notifyAdmins (alertEmails: string list) id target =
+    id,
+    JsonSerializer.Serialize
+        {
+            odataType = "#microsoft.graph.unifiedRoleManagementPolicyNotificationRule"
+            id = id
+            notificationType = "Email"
+            recipientType = "Admin"
+            notificationLevel = "All"
+            isDefaultRecipientsEnabled = true
+            notificationRecipients = alertEmails
+            target = target
+        }
+
 /// The rules to PATCH on a directory role's PIM policy, as (rule ID, JSON body). The same settings as the
 /// group PIM policies: activation for at most `maxHours` with MFA + justification; permanent eligibility;
 /// direct active assignments need MFA + justification and expire after 15 days (the shortest PIM allows),
-/// so nobody can be given the role permanently outside PIM.
-let policyRules (pim: DirectoryRolePim) : (string * string) list =
+/// so nobody can be given the role permanently outside PIM. `alertEmails` hear about every activation and
+/// every new assignment (D40).
+let policyRules (alertEmails: string list) (pim: DirectoryRolePim) : (string * string) list =
     [
         expiration "Expiration_EndUser_Assignment" true $"PT{pim.maxHours}H" (target "EndUser" "Assignment")
         mfaAndJustification "Enablement_EndUser_Assignment" (target "EndUser" "Assignment")
         expiration "Expiration_Admin_Eligibility" false "P365D" (target "Admin" "Eligibility")
         expiration "Expiration_Admin_Assignment" true "P15D" (target "Admin" "Assignment")
         mfaAndJustification "Enablement_Admin_Assignment" (target "Admin" "Assignment")
+        notifyAdmins alertEmails "Notification_Admin_EndUser_Assignment" (target "EndUser" "Assignment")
+        notifyAdmins alertEmails "Notification_Admin_Admin_Eligibility" (target "Admin" "Eligibility")
+        notifyAdmins alertEmails "Notification_Admin_Admin_Assignment" (target "Admin" "Assignment")
     ]
 
 // ---------------------------------------------------------------------------------------------
@@ -127,7 +159,10 @@ let private groupMember (groups: Map<GroupName, Group>) (m: Membership) =
         GroupMemberArgs(GroupObjectId = groups[m.group].ObjectId, MemberObjectId = memberId)
     )
 
-let private pimPolicy (groups: Map<GroupName, Group>) (rule: PimRule) =
+let private pimPolicy (groups: Map<GroupName, Group>) (alertEmails: Output<string list>) (rule: PimRule) =
+    let recipients () : InputList<string> =
+        alertEmails.Apply(fun emails -> List.toArray emails) |> InputList.op_Implicit
+
     GroupRoleManagementPolicy(
         $"{GroupName.value rule.group}-pim-policy",
         GroupRoleManagementPolicyArgs(
@@ -149,6 +184,37 @@ let private pimPolicy (groups: Map<GroupName, Group>) (rule: PimRule) =
                     ExpireAfter = "P15D",
                     RequireMultifactorAuthentication = true,
                     RequireJustification = true
+                ),
+            // D40: every activation, and every new eligible or active member, emails the admins.
+            NotificationRules =
+                GroupRoleManagementPolicyNotificationRulesArgs(
+                    EligibleActivations =
+                        GroupRoleManagementPolicyNotificationRulesEligibleActivationsArgs(
+                            AdminNotifications =
+                                GroupRoleManagementPolicyNotificationRulesEligibleActivationsAdminNotificationsArgs(
+                                    NotificationLevel = "All",
+                                    DefaultRecipients = true,
+                                    AdditionalRecipients = recipients ()
+                                )
+                        ),
+                    EligibleAssignments =
+                        GroupRoleManagementPolicyNotificationRulesEligibleAssignmentsArgs(
+                            AdminNotifications =
+                                GroupRoleManagementPolicyNotificationRulesEligibleAssignmentsAdminNotificationsArgs(
+                                    NotificationLevel = "All",
+                                    DefaultRecipients = true,
+                                    AdditionalRecipients = recipients ()
+                                )
+                        ),
+                    ActiveAssignments =
+                        GroupRoleManagementPolicyNotificationRulesActiveAssignmentsArgs(
+                            AdminNotifications =
+                                GroupRoleManagementPolicyNotificationRulesActiveAssignmentsAdminNotificationsArgs(
+                                    NotificationLevel = "All",
+                                    DefaultRecipients = true,
+                                    AdditionalRecipients = recipients ()
+                                )
+                        )
                 )
         )
     )
@@ -174,16 +240,18 @@ let private eligibility
 /// A directory role's PIM policy, set by `script` (scripts/pim-directory-role-policy.sh) on apply. A changed
 /// rule or script replaces the resource, which runs it again; removing it from the plan leaves the policy as
 /// it is. One resource per role, because the rules have to be set one after another.
-let private rolePolicy (script: string) (pim: DirectoryRolePim) =
-    let rules = policyRules pim |> List.map snd |> String.concat "," |> sprintf "[%s]"
+let private rolePolicy (script: string) (alertEmails: Output<string list>) (pim: DirectoryRolePim) =
+    // Secret, because it carries the alert addresses.
+    let rules =
+        alertEmails.Apply(fun emails -> policyRules emails pim |> List.map snd |> String.concat "," |> sprintf "[%s]")
 
     Command(
         $"{DirectoryRole.value pim.role}-pim-policy",
         CommandArgs(
             Create = script,
             Interpreter = inputList [ input "/bin/bash"; input "-c" ],
-            Environment = inputMap [ "ROLE_ID", input (DirectoryRole.templateId pim.role); "RULES", input rules ],
-            Triggers = inputList [ input (box rules); input (box script) ]
+            Environment = inputMap [ "ROLE_ID", input (DirectoryRole.templateId pim.role); "RULES", io rules ],
+            Triggers = inputList [ io (rules.Apply box); input (box script) ]
         )
     )
 
@@ -247,11 +315,16 @@ let private caPolicy (groups: Map<GroupName, Group>) (p: CaPolicy) =
 
 /// `policyScript` is the text of scripts/pim-directory-role-policy.sh.
 let deploy (policyScript: string) (plan: Plan) : Deployed =
+    // The repos are public, so the addresses only ever exist as Pulumi secrets: hidden in diffs and state.
+    let alertEmails = Output.CreateSecret(plan.alertEmails |> List.map Email.value)
     let groups = plan.groups |> List.map (fun name -> name, group name) |> Map.ofList
-    let policies = plan.pim |> List.map (fun rule -> rule, pimPolicy groups rule)
+
+    let policies =
+        plan.pim |> List.map (fun rule -> rule, pimPolicy groups alertEmails rule)
 
     let rolePolicies =
-        plan.directoryRoles |> List.map (fun pim -> pim, rolePolicy policyScript pim)
+        plan.directoryRoles
+        |> List.map (fun pim -> pim, rolePolicy policyScript alertEmails pim)
 
     {
         groups = groups

@@ -240,6 +240,8 @@ type Plan =
         rulesets: Ruleset list
         collaborators: Collaborator list
         environments: Environment list
+        /// Who gets PIM emails: every activation and every new assignment of a privileged role (D40).
+        alertEmails: Email list
     }
 
 let private memberships (access: Access) =
@@ -294,7 +296,13 @@ let private collaborators (owner: GitHubHandle) (access: Access) =
                     { repo = repo; person = person }
     ]
 
-let plan (owner: GitHubHandle) (caState: CaState option) (access: Access) : Result<Plan, string list> =
+let plan
+    (owner: GitHubHandle)
+    (caState: CaState option)
+    (alertEmails: Email list)
+    (access: Access)
+    : Result<Plan, string list> =
+
     result {
         let! rulesets = rulesets access
         let! todo = RepoName.parse "todo" |> Result.mapError List.singleton
@@ -356,5 +364,6 @@ let plan (owner: GitHubHandle) (caState: CaState option) (access: Access) : Resu
                             reviewers = []
                         }
                     ]
+                alertEmails = alertEmails
             }
     }
