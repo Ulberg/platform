@@ -139,6 +139,8 @@ module CaState =
 type CaUsers =
     | AllUsers
     | Groups of GroupName list
+    /// Guests and other external users, e.g. the owner Microsoft account.
+    | Guests
 
 /// What a policy applies to: cloud apps, or an authentication context that something (PIM) asks for.
 type CaTarget =
@@ -256,6 +258,18 @@ let private conditionalAccess (state: CaState option) (access: Access) =
                 [ "all" ]
                 (Apps [ "All" ])
                 (Groups [ InfraDevelopers; AppDevelopers ])
+                []
+                (Session
+                    {
+                        signIn = Hours 12
+                        persistentBrowser = true
+                    })
+            // D39: guests (the owner account keeps billing) sign in again every 12 h too.
+            policy
+                "CA09 Guests sign in every 12 h"
+                [ "all" ]
+                (Apps [ "All" ])
+                Guests
                 []
                 (Session
                     {

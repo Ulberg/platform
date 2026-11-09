@@ -326,10 +326,12 @@ let contextPolicyBody (groupIds: Map<GroupName, string>) (contextId: string) (p:
                             includeUsers =
                                 match p.users with
                                 | AllUsers -> [ "All" ]
+                                | Guests -> [ "GuestsOrExternalUsers" ]
                                 | Groups _ -> []
                             includeGroups =
                                 match p.users with
-                                | AllUsers -> []
+                                | AllUsers
+                                | Guests -> []
                                 | Groups names -> names |> List.map (fun n -> groupIds[n])
                             excludeUsers = p.excludedUsers |> List.map EntraObjectId.string
                         }
@@ -590,6 +592,11 @@ let private caPolicy (groups: Map<GroupName, Group>) (apps: string list, p: CaPo
         | Groups names ->
             ConditionalAccessPolicyConditionsUsersArgs(
                 IncludedGroups = inputList [ for name in names -> io groups[name].ObjectId ],
+                ExcludedUsers = inputList [ for id in p.excludedUsers -> input (EntraObjectId.string id) ]
+            )
+        | Guests ->
+            ConditionalAccessPolicyConditionsUsersArgs(
+                IncludedUsers = inputList [ input "GuestsOrExternalUsers" ],
                 ExcludedUsers = inputList [ for id in p.excludedUsers -> input (EntraObjectId.string id) ]
             )
 

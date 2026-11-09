@@ -87,7 +87,7 @@ let tests =
 
             test "every Conditional Access policy excludes both emergency accounts" {
                 let policies = (planWith (Some ReportOnly)).conditionalAccess
-                Expect.hasLength policies 8 "eight policies"
+                Expect.hasLength policies 9 "nine policies"
 
                 for p in policies do
                     Expect.equal p.state ReportOnly p.name
@@ -140,6 +140,16 @@ let tests =
                     "CA08: infra developers never stay signed in"
 
                 Expect.equal (find "CA08").users (Groups [ InfraDevelopers ]) "CA08 users"
+                Expect.equal (find "CA09").users Guests "CA09: guests"
+
+                Expect.equal
+                    (find "CA09").controls
+                    (Session
+                        {
+                            signIn = Hours 12
+                            persistentBrowser = true
+                        })
+                    "CA09: 12 h"
 
                 Expect.equal
                     (find "CA07").controls
