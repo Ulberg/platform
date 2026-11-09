@@ -24,11 +24,13 @@ Non-secret IDs live in [`config.env`](config.env). People live in [`../access/pe
 
 ## Part B: GitHub (done 2026-11-08)
 
-| App | ID | Installed on | Key stored as |
-|---|---|---|---|
-| `ulberg-platform-admin` | 5672546 | todo, platform | `PLATFORM_ADMIN_APP_KEY`, environment `dev` (platform) |
-| `ulberg-platform-reader` | 5672559 | todo, platform | `PLATFORM_READER_APP_KEY`, repo (platform) |
-| `ulberg-platform-pr-bot` | 5672567 | platform | `PR_BOT_APP_KEY`, environment `release` (todo) |
+| App | App ID | Client ID (variable) | Installed on | Key stored as |
+|---|---|---|---|---|
+| `ulberg-platform-admin` | 5672546 | `Iv23liIrII6c7xBXsDCF` (`PLATFORM_ADMIN_APP_CLIENT_ID`, env `dev`) | todo, platform | `PLATFORM_ADMIN_APP_KEY`, environment `dev` (platform) |
+| `ulberg-platform-reader` | 5672559 | `Iv23li5cUHIvETFLhpQ3` (`PLATFORM_READER_APP_CLIENT_ID`, repo) | todo, platform | `PLATFORM_READER_APP_KEY`, repo (platform) |
+| `ulberg-platform-pr-bot` | 5672567 | `Iv23liDYEGcAtYI2ncRf` (`PR_BOT_APP_CLIENT_ID`, env `release` in todo) | platform | `PR_BOT_APP_KEY`, environment `release` (todo) |
+
+Workflows identify the apps by **client ID** (`actions/create-github-app-token` v3 deprecates app IDs).
 
 All apps have webhooks off and can only be installed on this account. The keys were piped from 1Password straight into `gh secret set` and never printed. Rotate them every 6 months.
 
@@ -47,16 +49,18 @@ The script is safe to re-run. It creates:
 | `rg-platform-state` | Resource group for everything below |
 | `stplatform21784576` / `pulumi` | Pulumi state. ZRS, Entra-only auth (shared keys disabled), versioning + 30-day soft delete |
 | `kv-platform-21784576` / `pulumi` | RSA key for Pulumi secrets. RBAC mode, purge protection |
-| `id-platform-apply` | Managed identity, federated **only** with `repo:Ulberg/platform:environment:dev`. Contributor + RBAC Administrator on the subscription; Graph: groups, users, apps, PIM, Conditional Access |
-| `id-platform-preview` | Managed identity, federated **only** with `repo:Ulberg/platform:pull_request`. Reader + read-only Graph; write only on the state container (for preview lock files) |
+| `id-platform-apply` | Managed identity, federated **only** with `repo:Ulberg@83536945/platform@1450696781:environment:dev`. Contributor + RBAC Administrator on the subscription; Graph: groups, users, apps, PIM, Conditional Access |
+| `id-platform-preview` | Managed identity, federated **only** with `…/platform@1450696781:pull_request` and `…:ref:refs/heads/main` (the preview shown before an apply is approved). Reader + read-only Graph; write only on the state container (for preview lock files) |
 | GitHub variables | `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `AZURE_PREVIEW_CLIENT_ID`, `PULUMI_BACKEND_URL`, `PULUMI_SECRETS_PROVIDER`, and `AZURE_CLIENT_ID` in environment `dev` |
 
-There are no client secrets anywhere: both identities sign in with GitHub's OIDC token.
+GitHub's OIDC subject includes the owner and repo **IDs**, so a renamed or recreated repo with the same name can't get these tokens. There are no client secrets anywhere: both identities sign in with GitHub's OIDC token.
 
 **Be aware:** `id-platform-apply` can manage groups, apps, PIM and Conditional Access, which makes it effectively a tenant admin. The protection is that only a run in the `dev` environment, which needs a platform lead's approval and only deploys from `main`, can get a token for it.
 
 The admin account also gets standing *Storage Blob Data Contributor* on the state account and *Key Vault Crypto Officer* on the vault, so it can create the container and key. Pulumi moves these to PIM-eligible later.
 
 Verified after the run: `pulumi login azblob://pulumi?storage_account=stplatform21784576` works with Entra sign-in only (no storage keys).
+
+The empty Pulumi stack `stacks/access` → `main` was created once by the admin (`pulumi stack init main --secrets-provider azurekeyvault://…`), so its encrypted data key is committed in `Pulumi.main.yaml`. No resources were created from a laptop.
 
 The External ID tenant's CI identity is created in Phase 3, when we first manage resources there.

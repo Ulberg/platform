@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/stacks/" />
+  <Folder Name="/stacks/access/">
+    <Project Path="stacks/access/Access.fsproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Access.Tests/Access.Tests.fsproj" />
+  </Folder>
+</Solution>

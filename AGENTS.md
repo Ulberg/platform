@@ -44,5 +44,6 @@ In practice, a change is not done until:
 - Nobody applies infrastructure from a laptop. `pulumi up` runs only in CI, in the `dev` GitHub Environment, after a platform lead approves. Locally, use `pulumi preview` and the local `kind` platform.
 - Applications declare their needs in `platform.yaml` in their own repo. This repo validates those requests against policy and decides how to fulfil them. Never give an application repo credentials or direct control.
 - Ask before making unusual or hard-to-reverse choices. The project owner does not want to be surprised by awkward choices.
+- **F# code follows [`docs/fsharp-style.md`](docs/fsharp-style.md)**, in every file: input → domain → action → report, no mutation, no `null`, parse-don't-validate. CI enforces what it can.
 - No git pre-commit hooks. Every check runs in CI.
 - Never commit secrets, private keys or third-party reference material.

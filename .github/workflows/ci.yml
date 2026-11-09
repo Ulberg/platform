@@ -16,7 +16,7 @@ jobs:
     name: secret scan (gitleaks)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Install gitleaks (checksum verified)
@@ -33,16 +33,28 @@ jobs:
     name: prompt log
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Check .prompts/ format
         run: python3 .github/scripts/check_prompt_log.py
       - name: Test the prompt-log hook
         run: python3 .claude/hooks/test_prompt_log.py
 
-  access:
-    name: access definitions
+  dotnet:
+    name: dotnet (format, build, test)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Check access/people.yaml
-        run: .github/scripts/check_access.sh
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+      - run: dotnet tool restore
+      - name: F# style (no mutation, discarded results or null)
+        run: .github/scripts/check_fsharp_style.sh
+      - name: Style guide matches Ulberg/todo
+        run: curl -sSfL https://raw.githubusercontent.com/Ulberg/todo/main/docs/fsharp-style.md | diff -u - docs/fsharp-style.md
+      - name: Format (Fantomas)
+        run: dotnet fantomas --check stacks tests
+      - name: Build (warnings are errors)
+        run: dotnet build platform.slnx -c Release
+      - name: Test (includes access/people.yaml and CODEOWNERS)
+        run: dotnet run --project tests/Access.Tests -c Release --no-build

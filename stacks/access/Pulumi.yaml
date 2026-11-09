@@ -1,0 +1,3 @@
+name: access
+runtime: dotnet
+description: People, groups, PIM, Conditional Access and GitHub repo rules, generated from access/people.yaml

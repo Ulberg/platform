@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Fixtures.fs" />
+    <Compile Include="PeopleTests.fs" />
+    <Compile Include="DesiredTests.fs" />
+    <Compile Include="CodeownersTests.fs" />
+    <Compile Include="Main.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Expecto" Version="11.1.1" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../stacks/access/Access.fsproj" />
+  </ItemGroup>
+</Project>
