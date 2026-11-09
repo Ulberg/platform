@@ -62,6 +62,31 @@ type PimRule =
     }
 
 // ---------------------------------------------------------------------------------------------
+// Entra directory roles
+
+/// Built-in Entra roles that nobody holds standing (D35). Only the emergency accounts keep a
+/// standing Global Admin, and those are set up by hand, not here.
+type DirectoryRole = | GlobalAdministrator
+
+module DirectoryRole =
+    let value =
+        function
+        | GlobalAdministrator -> "global-administrator"
+
+    /// Built-in role template ID, the same in every tenant.
+    let templateId =
+        function
+        | GlobalAdministrator -> "62e90394-69f5-4237-9190-012177145e10"
+
+/// PIM for a directory role: eligible only, activated with MFA + justification for at most `maxHours`.
+type DirectoryRolePim =
+    {
+        role: DirectoryRole
+        maxHours: int
+        eligible: Person list
+    }
+
+// ---------------------------------------------------------------------------------------------
 // Azure RBAC
 
 type AzureRole = | Reader
@@ -200,6 +225,7 @@ type Plan =
         groups: GroupName list
         memberships: Membership list
         pim: PimRule list
+        directoryRoles: DirectoryRolePim list
         roleAssignments: RoleGrant list
         conditionalAccess: CaPolicy list
         rulesets: Ruleset list
@@ -277,6 +303,14 @@ let plan (owner: GitHubHandle) (caState: CaState option) (access: Access) : Resu
                         }
                         {
                             group = PlatformAdmin
+                            maxHours = 1
+                            eligible = access.platformLeads
+                        }
+                    ]
+                directoryRoles =
+                    [
+                        {
+                            role = GlobalAdministrator
                             maxHours = 1
                             eligible = access.platformLeads
                         }
