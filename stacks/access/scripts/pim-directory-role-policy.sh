@@ -13,14 +13,22 @@ policy=$(az rest --method GET --url "$graph/policies/roleManagementPolicyAssignm
 [ -n "$policy" ] || { echo "No PIM policy found for directory role $ROLE_ID" >&2; exit 1; }
 
 # One rule at a time: parallel PATCHes on the same policy overwrite each other. Each rule is read back
-# afterwards, so a PATCH that didn't take effect fails the apply instead of passing silently.
+# afterwards, so a PATCH that didn't take effect fails the apply instead of passing silently. A rule may
+# not read back right away (seen with notification recipients), so the check retries for a minute.
+matches() { # rule actual
+  jq -e --argjson want "$1" \
+    '. as $got | $want | del(.target, ."@odata.type") | to_entries | all(.value == $got[.key])' <<<"$2" >/dev/null
+}
+
 jq -c '.[]' <<<"$RULES" | while read -r rule; do
   id=$(jq -r .id <<<"$rule")
   url="$graph/policies/roleManagementPolicies/$policy/rules/$id"
   az rest --method PATCH --url "$url" --body "$rule" -o none
-  actual=$(az rest --method GET --url "$url")
-  jq -e --argjson want "$rule" \
-    '. as $got | $want | del(.target, ."@odata.type") | to_entries | all(.value == $got[.key])' \
-    <<<"$actual" >/dev/null || { echo "PIM policy for role $ROLE_ID: $id did not take effect: $actual" >&2; exit 1; }
+  for attempt in 1 2 3 4 5 6 7; do
+    actual=$(az rest --method GET --url "$url")
+    matches "$rule" "$actual" && break
+    [ "$attempt" -lt 7 ] || { echo "PIM policy for role $ROLE_ID: $id did not take effect: $actual" >&2; exit 1; }
+    sleep 10
+  done
   echo "PIM policy for role $ROLE_ID: $id set and verified"
 done
