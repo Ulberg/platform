@@ -53,11 +53,22 @@ module Membership =
         | Member.Person p -> $"{GroupName.value m.group}-{Person.key p}"
         | Member.Group inner -> $"{GroupName.value inner}-in-{GroupName.value m.group}"
 
-/// PIM for Groups: membership of `group` is eligible only, activated with MFA + justification.
+/// What PIM asks for at activation, besides a justification.
+type ActivationCheck =
+    /// PIM's own MFA check. It accepts the MFA from an earlier sign-in, however old.
+    | Mfa
+    /// A Conditional Access authentication context: a fresh phishing-resistant sign-in every time (CA05, D39).
+    | AuthenticationContext of id: string
+
+/// The authentication context that privileged PIM activations require once Conditional Access is on.
+let privilegedActivationContext = "c1"
+
+/// PIM for Groups: membership of `group` is eligible only, activated with `activation` + justification.
 type PimRule =
     {
         group: GroupName
         maxHours: int
+        activation: ActivationCheck
         eligible: Person list
     }
 
@@ -78,11 +89,12 @@ module DirectoryRole =
         function
         | GlobalAdministrator -> "62e90394-69f5-4237-9190-012177145e10"
 
-/// PIM for a directory role: eligible only, activated with MFA + justification for at most `maxHours`.
+/// PIM for a directory role: eligible only, activated with `activation` + justification for at most `maxHours`.
 type DirectoryRolePim =
     {
         role: DirectoryRole
         maxHours: int
+        activation: ActivationCheck
         eligible: Person list
     }
 
@@ -128,23 +140,46 @@ type CaUsers =
     | AllUsers
     | Groups of GroupName list
 
+/// What a policy applies to: cloud apps, or an authentication context that something (PIM) asks for.
+type CaTarget =
+    | Apps of string list
+    | Context of id: string
+
 type CaGrant =
     | RequireMfa
     | Block
     /// An Entra authentication strength policy, e.g. phishing-resistant MFA.
     | RequireStrength of policyId: string
 
+type SignInFrequency =
+    | Hours of int
+    /// A fresh sign-in for every request that hits the policy.
+    | EveryTime
+
+type CaSession =
+    {
+        signIn: SignInFrequency
+        /// false: the browser never offers "stay signed in".
+        persistentBrowser: bool
+    }
+
+/// A policy needs a grant, a session control or both; "neither" can't be expressed.
+type CaControls =
+    | Grant of CaGrant
+    | Session of CaSession
+    | GrantAndSession of CaGrant * CaSession
+
 type CaPolicy =
     {
         name: string
         state: CaState
         clientAppTypes: string list
-        applications: string list
+        target: CaTarget
         users: CaUsers
         /// Emergency-access accounts, excluded from every policy.
         excludedUsers: EntraObjectId list
         signInRisk: string list
-        grant: CaGrant
+        controls: CaControls
     }
 
 /// Windows Azure Service Management API (portal, az CLI, ARM).
@@ -155,36 +190,78 @@ let private phishingResistant =
     "/policies/authenticationStrengthPolicies/00000000-0000-0000-0000-000000000004"
 
 let private conditionalAccess (state: CaState option) (access: Access) =
-    let policy name clientAppTypes applications users signInRisk grant state =
+    let policy name clientAppTypes target users signInRisk controls state =
         {
             name = name
             state = state
             clientAppTypes = clientAppTypes
-            applications = applications
+            target = target
             users = users
             excludedUsers = access.emergencyAccess
             signInRisk = signInRisk
-            grant = grant
+            controls = controls
         }
 
     let policies =
         [
-            policy "CA01 Require MFA for everyone" [ "all" ] [ "All" ] AllUsers [] RequireMfa
-            policy "CA02 Block legacy authentication" [ "exchangeActiveSync"; "other" ] [ "All" ] AllUsers [] Block
+            policy "CA01 Require MFA for everyone" [ "all" ] (Apps [ "All" ]) AllUsers [] (Grant RequireMfa)
+            policy
+                "CA02 Block legacy authentication"
+                [ "exchangeActiveSync"; "other" ]
+                (Apps [ "All" ])
+                AllUsers
+                []
+                (Grant Block)
             policy
                 "CA03 Phishing-resistant MFA for Azure management"
                 [ "all" ]
-                [ azureManagementApp ]
+                (Apps [ azureManagementApp ])
                 AllUsers
                 []
-                (RequireStrength phishingResistant)
+                (Grant(RequireStrength phishingResistant))
             policy
                 "CA04 Risky sign-ins by infra developers need MFA"
                 [ "all" ]
-                [ "All" ]
+                (Apps [ "All" ])
                 (Groups [ InfraDevelopers ])
                 [ "medium"; "high" ]
-                RequireMfa
+                (Grant RequireMfa)
+            // D39: PIM asks for this context, so every activation needs a fresh passkey sign-in.
+            policy
+                "CA05 Fresh phishing-resistant sign-in for every PIM activation"
+                [ "all" ]
+                (Context privilegedActivationContext)
+                AllUsers
+                []
+                (GrantAndSession(
+                    RequireStrength phishingResistant,
+                    {
+                        signIn = EveryTime
+                        persistentBrowser = true
+                    }
+                ))
+            policy
+                "CA06 Infra developers sign in to Azure management every 4 h"
+                [ "all" ]
+                (Apps [ azureManagementApp ])
+                (Groups [ InfraDevelopers ])
+                []
+                (Session
+                    {
+                        signIn = Hours 4
+                        persistentBrowser = false
+                    })
+            policy
+                "CA07 Developers sign in every 12 h"
+                [ "all" ]
+                (Apps [ "All" ])
+                (Groups [ InfraDevelopers; AppDevelopers ])
+                []
+                (Session
+                    {
+                        signIn = Hours 12
+                        persistentBrowser = true
+                    })
         ]
 
     match state with
@@ -303,6 +380,14 @@ let plan
     (access: Access)
     : Result<Plan, string list> =
 
+    // PIM requires the authentication context only once CA05 is enforced. In report-only, CA05 checks
+    // nothing, so PIM keeps its own MFA check.
+    let activation =
+        match caState with
+        | Some Enforced -> AuthenticationContext privilegedActivationContext
+        | Some ReportOnly
+        | None -> Mfa
+
     result {
         let! rulesets = rulesets access
         let! todo = RepoName.parse "todo" |> Result.mapError List.singleton
@@ -316,11 +401,13 @@ let plan
                         {
                             group = PlatformWrite
                             maxHours = 2
+                            activation = activation
                             eligible = access.infraDevelopers
                         }
                         {
                             group = PlatformAdmin
                             maxHours = 1
+                            activation = activation
                             eligible = access.platformLeads
                         }
                     ]
@@ -329,6 +416,7 @@ let plan
                         {
                             role = GlobalAdministrator
                             maxHours = 1
+                            activation = activation
                             eligible = access.platformLeads
                         }
                     ]
