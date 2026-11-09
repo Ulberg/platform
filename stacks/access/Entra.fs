@@ -500,6 +500,7 @@ let private rolePolicy
 let private contextPolicy
     (scripts: Scripts)
     (groupIds: Output<Map<GroupName, string>>)
+    (after: Resource list)
     (contextId: string, p: CaPolicy)
     =
     let body = groupIds.Apply(fun ids -> contextPolicyBody ids contextId p)
@@ -518,7 +519,9 @@ let private contextPolicy
                         "POLICY", io body
                     ],
             Triggers = inputList [ io (body.Apply box); input (box scripts.caContextPolicy) ]
-        )
+        ),
+        // After the provider's policies: creating them all at once gets Graph to throttle.
+        CustomResourceOptions(DependsOn = inputList [ for r in after -> input r ])
     )
 
 let private roleEligibility (policy: Command) (pim: DirectoryRolePim) (p: Person) =
@@ -651,11 +654,19 @@ let deploy (scripts: Scripts) (plan: Plan) : Deployed =
             | Apps _ -> true
             | Context _ -> false)
 
+    let appPolicyResources =
+        appPolicies
+        |> List.choose (fun p ->
+            match p.target with
+            | Apps apps -> Some(caPolicy groups (apps, p))
+            | Context _ -> None)
+
     let contextCommands =
         contextPolicies
         |> List.choose (fun p ->
             match p.target with
-            | Context id -> Some(contextPolicy scripts groupIds (id, p))
+            | Context id ->
+                Some(contextPolicy scripts groupIds [ for r in appPolicyResources -> r :> Resource ] (id, p))
             | Apps _ -> None)
 
     let after = contextCommands |> List.map (fun c -> c :> Resource)
@@ -678,11 +689,6 @@ let deploy (scripts: Scripts) (plan: Plan) : Deployed =
         directoryRoleEligibilities =
             rolePolicies
             |> List.collect (fun (pim, policy) -> pim.eligible |> List.map (roleEligibility policy pim))
-        conditionalAccess =
-            appPolicies
-            |> List.choose (fun p ->
-                match p.target with
-                | Apps apps -> Some(caPolicy groups (apps, p))
-                | Context _ -> None)
+        conditionalAccess = appPolicyResources
         contextPolicies = contextCommands
     }
