@@ -3,6 +3,7 @@
     <OutputType>Exe</OutputType>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="YamlTests.fs" />
     <Compile Include="PeopleTests.fs" />
     <Compile Include="Main.fs" />
   </ItemGroup>

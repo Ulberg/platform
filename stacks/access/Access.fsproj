@@ -3,6 +3,7 @@
     <OutputType>Exe</OutputType>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="Yaml.fs" />
     <Compile Include="People.fs" />
     <Compile Include="Entra.fs" />
     <Compile Include="AzureRbac.fs" />
@@ -15,6 +16,7 @@
     <PackageReference Include="Pulumi.AzureAD" Version="6.11.2" />
     <PackageReference Include="Pulumi.AzureNative" Version="3.30.0" />
     <PackageReference Include="Pulumi.Github" Version="6.15.1" />
+    <PackageReference Include="FsToolkit.ErrorHandling" Version="5.2.0" />
     <PackageReference Include="YamlDotNet" Version="18.1.0" />
     <!-- Pulumi pulls in OpenTelemetry 1.9.0, which has known vulnerabilities. Pin the fixed versions. -->
     <PackageReference Include="OpenTelemetry.Api" Version="1.20.1" />

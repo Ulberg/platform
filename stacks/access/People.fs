@@ -4,6 +4,7 @@ module Platform.Access.People
 
 open System
 open System.IO
+open FsToolkit.ErrorHandling
 open YamlDotNet.RepresentationModel
 
 type Person =
@@ -25,81 +26,21 @@ type Access =
 
     member this.PlatformLeads = this.RepoLeads["platform"]
 
-type private ResultBuilder() =
-    member _.Bind(r, f) = Result.bind f r
-    member _.Return x = Ok x
-    member _.ReturnFrom r = r
-    member _.Zero() = Ok()
-
-let private result = ResultBuilder()
-
-let private orError error option =
-    match option with
-    | Some x -> Ok x
-    | None -> Error error
-
 let private requiredGroups = [ "infra-developers"; "app-developers" ]
 
-let private scalar (node: YamlNode) =
-    match node with
-    | :? YamlScalarNode as s ->
-        match s.Value with
-        | null -> Error $"expected a value at {node.Start}"
-        | v when String.IsNullOrWhiteSpace v -> Error $"expected a value at {node.Start}"
-        | v -> Ok v
-    | _ -> Error $"expected a value at {node.Start}"
-
-let private mapping (node: YamlNode) =
-    match node with
-    | :? YamlMappingNode as m -> Ok [ for kv in m.Children -> (kv.Key, kv.Value) ]
-    | _ -> Error $"expected a mapping at {node.Start}"
-
-let private sequence (node: YamlNode) =
-    match node with
-    | :? YamlSequenceNode as s -> Ok(List.ofSeq s.Children)
-    | _ -> Error $"expected a list at {node.Start}"
-
-let private field name (fields: (YamlNode * YamlNode) list) =
-    fields
-    |> List.tryFind (fun (k, _) -> scalar k = Ok name)
-    |> Option.map snd
-    |> orError $"missing '{name}'"
-
-let private guid context (text: string) =
-    match Guid.TryParse text with
-    | true, g -> Ok g
-    | _ -> Error $"{context}: '{text}' is not an object ID"
-
-/// Collects every error instead of stopping at the first one.
-let private traverse (f: 'a -> Result<'b, string list>) (items: 'a list) =
-    let results = items |> List.map f
-
-    match
-        results
-        |> List.collect (function
-            | Error e -> e
-            | Ok _ -> [])
-    with
-    | [] -> Ok(results |> List.choose Result.toOption)
-    | errors -> Error errors
-
-let private one r = Result.mapError List.singleton r
-
 let private person (key: YamlNode, value: YamlNode) =
-    result {
-        let! key = scalar key |> one
-        let! fields = mapping value |> one
+    validation {
+        let! key = Yaml.scalar key
+        let! fields = Yaml.mapping value |> Yaml.within key
 
         let! github =
-            field "github" fields
-            |> Result.bind scalar
-            |> Result.mapError (fun e -> [ $"{key}: {e}" ])
+            Yaml.field "github" fields |> Validation.bind Yaml.scalar |> Yaml.within key
 
-        let! entra =
-            field "entra" fields
-            |> Result.bind scalar
-            |> Result.bind (guid key)
-            |> Result.mapError (fun e -> [ $"{key}: {e}" ])
+        and! entra =
+            Yaml.field "entra" fields
+            |> Validation.bind Yaml.scalar
+            |> Validation.bind Yaml.guid
+            |> Yaml.within key
 
         return
             {
@@ -109,116 +50,100 @@ let private person (key: YamlNode, value: YamlNode) =
             }
     }
 
-let private members (people: Person list) context (node: YamlNode) =
-    result {
-        let! names = sequence node |> Result.mapError (fun e -> [ $"{context}: {e}" ])
+let private uniqueGitHub (people: Person list) : Validation<unit, string> =
+    match
+        people
+        |> List.countBy (fun p -> p.GitHub.ToLowerInvariant())
+        |> List.filter (fun (_, n) -> n > 1)
+    with
+    | [] -> Ok()
+    | dups -> Error [ for g, _ in dups -> $"people: github handle '{g}' is used more than once" ]
+
+let private members (people: Person list) (node: YamlNode) =
+    validation {
+        let! names = Yaml.sequence node
 
         let! found =
             names
-            |> traverse (fun n ->
-                scalar n
-                |> Result.bind (fun name ->
+            |> List.traverseValidationA (fun n ->
+                Yaml.scalar n
+                |> Validation.bind (fun name ->
                     people
                     |> List.tryFind (fun p -> p.Key = name)
-                    |> orError $"{context}: unknown person '{name}'")
-                |> one)
+                    |> Result.requireSome $"unknown person '{name}'"
+                    |> Validation.ofResult))
 
-        if List.isEmpty found then
-            return! Error [ $"{context}: needs at least one person" ]
-        else
-            return List.distinct found
+        do! found |> Result.requireNotEmpty "needs at least one person"
+        return List.distinct found
     }
 
-let private namedLists people section fields =
-    result {
-        let! entries = field section fields |> Result.bind mapping |> one
+/// A section like `groups:` or `repo-leads:`: names mapped to lists of people.
+let private namedLists people section root =
+    validation {
+        let! entries = Yaml.field section root |> Validation.bind Yaml.mapping
 
-        return!
+        let! lists =
             entries
-            |> traverse (fun (k, v) ->
-                result {
-                    let! name = scalar k |> one
-                    let! list = members people $"{section}.{name}" v
-                    return name, list
-                })
-            |> Result.map Map.ofList
+            |> List.traverseValidationA (fun (k, v) ->
+                Yaml.scalar k
+                |> Validation.bind (fun name ->
+                    members people v
+                    |> Yaml.within $"{section}.{name}"
+                    |> Validation.map (fun list -> name, list)))
+
+        return Map.ofList lists
     }
 
-let parse (yaml: string) : Result<Access, string list> =
-    result {
-        let! root =
-            try
-                let stream = YamlStream()
-                stream.Load(new StringReader(yaml))
-                mapping stream.Documents[0].RootNode |> one
-            with ex ->
-                Error [ $"not valid YAML: {ex.Message}" ]
+let private requireKeys section keys (map: Map<string, 'a>) =
+    keys
+    |> List.traverseValidationA (fun k ->
+        if map.ContainsKey k then
+            Ok()
+        else
+            Validation.error $"{section}: missing '{k}'")
+    |> Validation.map (fun _ -> map)
+
+let private emergencyAccess root =
+    Yaml.field "emergency-access" root
+    |> Validation.bind Yaml.sequence
+    |> Validation.bind (List.traverseValidationA (Yaml.scalar >> Validation.bind Yaml.guid))
+    |> Validation.bind (fun ids ->
+        if List.length ids >= 2 then
+            Ok ids
+        else
+            Validation.error "needs two accounts")
+    |> Yaml.within "emergency-access"
+
+let parse (yaml: string) : Validation<Access, string> =
+    validation {
+        let! root = Yaml.parseDocument yaml |> Validation.bind Yaml.mapping
 
         let! people =
-            field "people" root
-            |> Result.bind mapping
-            |> one
-            |> Result.bind (traverse person)
+            Yaml.field "people" root
+            |> Validation.bind Yaml.mapping
+            |> Validation.bind (List.traverseValidationA person)
 
-        let duplicateGitHub =
-            match
-                people
-                |> List.countBy (fun p -> p.GitHub.ToLowerInvariant())
-                |> List.filter (fun (_, n) -> n > 1)
-            with
-            | [] -> Ok()
-            | dups -> Error [ for g, _ in dups -> $"people: github handle '{g}' is used more than once" ]
+        // The sections are independent (and!), so one run reports every problem in the file.
+        let! _ = uniqueGitHub people
 
-        let groups =
+        and! groups =
             namedLists people "groups" root
-            |> Result.bind (fun groups ->
-                match requiredGroups |> List.filter (fun g -> not (groups.ContainsKey g)) with
-                | [] -> Ok groups
-                | missing -> Error [ for g in missing -> $"groups: missing '{g}'" ])
+            |> Validation.bind (requireKeys "groups" requiredGroups)
 
-        let repoLeads =
+        and! repoLeads =
             namedLists people "repo-leads" root
-            |> Result.bind (fun leads ->
-                if leads.ContainsKey "platform" then
-                    Ok leads
-                else
-                    Error [ "repo-leads: missing 'platform'" ])
+            |> Validation.bind (requireKeys "repo-leads" [ "platform" ])
 
-        let emergency =
-            field "emergency-access" root
-            |> Result.bind sequence
-            |> one
-            |> Result.bind (traverse (fun n -> scalar n |> Result.bind (guid "emergency-access") |> one))
-            |> Result.bind (fun ids ->
-                if List.length ids >= 2 then
-                    Ok ids
-                else
-                    Error [ "emergency-access: needs two accounts" ])
+        and! emergency = emergencyAccess root
 
-        // The sections are checked independently, so one run reports every problem in the file.
-        let errorsOf =
-            function
-            | Error e -> e
-            | Ok _ -> []
-
-        match duplicateGitHub, groups, repoLeads, emergency with
-        | Ok(), Ok groups, Ok repoLeads, Ok emergency ->
-            return
-                {
-                    People = people
-                    InfraDevelopers = groups["infra-developers"]
-                    AppDevelopers = groups["app-developers"]
-                    RepoLeads = repoLeads
-                    EmergencyAccess = emergency
-                }
-        | _ ->
-            return!
-                Error(
-                    errorsOf duplicateGitHub
-                    @ errorsOf groups
-                    @ errorsOf repoLeads
-                    @ errorsOf emergency
-                )
+        return
+            {
+                People = people
+                InfraDevelopers = groups["infra-developers"]
+                AppDevelopers = groups["app-developers"]
+                RepoLeads = repoLeads
+                EmergencyAccess = emergency
+            }
     }
 
 let load path =
