@@ -20,6 +20,8 @@ type Deployed =
         pimPolicies: GroupRoleManagementPolicy list
         eligibilities: PrivilegedAccessGroupEligibilitySchedule list
         directoryRolePolicies: Command list
+        /// The group PIM policies' activation check (MFA or the authentication context), set by script.
+        groupActivations: Command list
         directoryRoleEligibilities: DirectoryRoleEligibilityScheduleRequest list
         conditionalAccess: ConditionalAccessPolicy list
         /// Conditional Access policies the azuread provider can't express (authentication-context targets).
@@ -29,7 +31,7 @@ type Deployed =
 /// The Graph scripts the stack runs as Pulumi Commands, read in Program's input step (scripts/).
 type Scripts =
     {
-        pimDirectoryRolePolicy: string
+        pimPolicyRules: string
         caContextPolicy: string
         caContextPolicyDelete: string
     }
@@ -141,21 +143,22 @@ let private authenticationContext (context: string option) target =
         json
     )
 
-/// Activation asks for MFA, or for the authentication context instead (they exclude each other). The order
-/// keeps one of them on at every moment while switching.
+/// Activation asks for MFA, or for the authentication context instead. Entra refuses to have both on at
+/// once (MfaAndAcrsConflict), so the one being replaced is switched off first. In the seconds between,
+/// activation still needs the MFA of the sign-in (CA01).
 let private activationRules (activation: ActivationCheck) =
     let endUser = target "EndUser" "Assignment"
 
     match activation with
     | Mfa ->
         [
-            mfaAndJustification "Enablement_EndUser_Assignment" endUser
             authenticationContext None endUser
+            mfaAndJustification "Enablement_EndUser_Assignment" endUser
         ]
     | AuthenticationContext id ->
         [
-            authenticationContext (Some id) endUser
             enablement "Enablement_EndUser_Assignment" [ "Justification" ] endUser
+            authenticationContext (Some id) endUser
         ]
 
 /// Emails the admins (the role's default recipients plus `alertEmails`) about every event of `target`.
@@ -394,22 +397,14 @@ let private pimPolicy
     let recipients () : InputList<string> =
         alertEmails.Apply(fun emails -> List.toArray emails) |> InputList.op_Implicit
 
+    // MFA vs authentication context is left to groupActivation below: the provider can't switch between
+    // them (Entra refuses both at once, and the provider rejects setting MFA off next to a context).
     let activation =
-        match rule.activation with
-        | Mfa ->
-            GroupRoleManagementPolicyActivationRulesArgs(
-                MaximumDuration = $"PT{rule.maxHours}H",
-                RequireMultifactorAuthentication = true,
-                RequireJustification = true,
-                RequireApproval = false
-            )
-        | AuthenticationContext id ->
-            GroupRoleManagementPolicyActivationRulesArgs(
-                MaximumDuration = $"PT{rule.maxHours}H",
-                RequiredConditionalAccessAuthenticationContext = id,
-                RequireJustification = true,
-                RequireApproval = false
-            )
+        GroupRoleManagementPolicyActivationRulesArgs(
+            MaximumDuration = $"PT{rule.maxHours}H",
+            RequireJustification = true,
+            RequireApproval = false
+        )
 
     GroupRoleManagementPolicy(
         $"{GroupName.value rule.group}-pim-policy",
@@ -481,7 +476,7 @@ let private eligibility
         CustomResourceOptions(DependsOn = InputList.op_Implicit (policy :> Resource))
     )
 
-/// A directory role's PIM policy, set by `script` (scripts/pim-directory-role-policy.sh) on apply. A changed
+/// A directory role's PIM policy, set by `script` (scripts/pim-policy-rules.sh) on apply. A changed
 /// rule or script replaces the resource, which runs it again; removing it from the plan leaves the policy as
 /// it is. One resource per role, because the rules have to be set one after another.
 let private rolePolicy
@@ -499,10 +494,49 @@ let private rolePolicy
         CommandArgs(
             Create = script,
             Interpreter = inputList [ input "/bin/bash"; input "-c" ],
-            Environment = inputMap [ "ROLE_ID", input (DirectoryRole.templateId pim.role); "RULES", io rules ],
+            Environment =
+                inputMap
+                    [
+                        "SCOPE_ID", input "/"
+                        "SCOPE_TYPE", input "DirectoryRole"
+                        "ROLE_ID", input (DirectoryRole.templateId pim.role)
+                        "RULES", io rules
+                    ],
             Triggers = inputList [ io (rules.Apply box); input (box script) ]
         ),
         CustomResourceOptions(DependsOn = inputList [ for r in after -> input r ])
+    )
+
+/// A group PIM policy's activation check (MFA or the authentication context), set by `script`
+/// (scripts/pim-policy-rules.sh) on apply, in the order Entra accepts. Runs after the provider's policy.
+let private groupActivation
+    (script: string)
+    (groups: Map<GroupName, Group>)
+    (after: Resource list)
+    (rule: PimRule, policy: GroupRoleManagementPolicy)
+    =
+    let rules =
+        activationRules rule.activation
+        |> List.map snd
+        |> String.concat ","
+        |> sprintf "[%s]"
+
+    Command(
+        $"{GroupName.value rule.group}-pim-activation",
+        CommandArgs(
+            Create = script,
+            Interpreter = inputList [ input "/bin/bash"; input "-c" ],
+            Environment =
+                inputMap
+                    [
+                        "SCOPE_ID", io groups[rule.group].ObjectId
+                        "SCOPE_TYPE", input "Group"
+                        "ROLE_ID", input "member"
+                        "RULES", input rules
+                    ],
+            Triggers = inputList [ input (box rules); input (box script) ]
+        ),
+        CustomResourceOptions(DependsOn = inputList [ for r in (policy :> Resource) :: after -> input r ])
     )
 
 /// A Conditional Access policy that targets an authentication context, plus the context itself, set by
@@ -700,7 +734,7 @@ let deploy (scripts: Scripts) (plan: Plan) : Deployed =
 
     let rolePolicies =
         plan.directoryRoles
-        |> List.map (fun pim -> pim, rolePolicy scripts.pimDirectoryRolePolicy alertEmails after pim)
+        |> List.map (fun pim -> pim, rolePolicy scripts.pimPolicyRules alertEmails after pim)
 
     {
         groups = groups
@@ -710,6 +744,7 @@ let deploy (scripts: Scripts) (plan: Plan) : Deployed =
             policies
             |> List.collect (fun (rule, policy) -> rule.eligible |> List.map (eligibility groups policy rule))
         directoryRolePolicies = rolePolicies |> List.map snd
+        groupActivations = policies |> List.map (groupActivation scripts.pimPolicyRules groups after)
         directoryRoleEligibilities =
             rolePolicies
             |> List.collect (fun (pim, policy) -> pim.eligible |> List.map (roleEligibility policy pim))

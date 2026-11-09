@@ -33,8 +33,8 @@ let tests =
                     (rules |> List.map fst)
                     [
                         "Expiration_EndUser_Assignment"
-                        "Enablement_EndUser_Assignment"
                         "AuthenticationContext_EndUser_Assignment"
+                        "Enablement_EndUser_Assignment"
                         "Expiration_Admin_Eligibility"
                         "Expiration_Admin_Assignment"
                         "Enablement_Admin_Assignment"
@@ -90,7 +90,7 @@ let tests =
                     "no claim value sent"
             }
 
-            test "with the authentication context, activation needs it instead of MFA, and it is switched on first" {
+            test "with the authentication context, activation needs it instead of MFA, which is switched off first" {
                 let ctx = rulesWith (AuthenticationContext "c1")
 
                 let activationRules =
@@ -102,10 +102,10 @@ let tests =
                     activationRules
                     [
                         "Expiration_EndUser_Assignment"
-                        "AuthenticationContext_EndUser_Assignment"
                         "Enablement_EndUser_Assignment"
+                        "AuthenticationContext_EndUser_Assignment"
                     ]
-                    "context before enablement"
+                    "MFA off before the context goes on (Entra refuses both at once)"
 
                 let find id = ctx |> List.find (fst >> (=) id) |> snd
                 Expect.equal (text "claimValue" (find "AuthenticationContext_EndUser_Assignment")) "c1" "claim"
