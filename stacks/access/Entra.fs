@@ -141,21 +141,22 @@ let private authenticationContext (context: string option) target =
         json
     )
 
-/// Activation asks for MFA, or for the authentication context instead (they exclude each other). The order
-/// keeps one of them on at every moment while switching.
+/// Activation asks for MFA, or for the authentication context instead. Entra refuses to have both on at
+/// once (MfaAndAcrsConflict), so the one being replaced is switched off first. In the seconds between,
+/// activation still needs the MFA of the sign-in (CA01).
 let private activationRules (activation: ActivationCheck) =
     let endUser = target "EndUser" "Assignment"
 
     match activation with
     | Mfa ->
         [
-            mfaAndJustification "Enablement_EndUser_Assignment" endUser
             authenticationContext None endUser
+            mfaAndJustification "Enablement_EndUser_Assignment" endUser
         ]
     | AuthenticationContext id ->
         [
-            authenticationContext (Some id) endUser
             enablement "Enablement_EndUser_Assignment" [ "Justification" ] endUser
+            authenticationContext (Some id) endUser
         ]
 
 /// Emails the admins (the role's default recipients plus `alertEmails`) about every event of `target`.
@@ -406,6 +407,8 @@ let private pimPolicy
         | AuthenticationContext id ->
             GroupRoleManagementPolicyActivationRulesArgs(
                 MaximumDuration = $"PT{rule.maxHours}H",
+                // Entra refuses MFA and an authentication context together, so MFA is switched off explicitly.
+                RequireMultifactorAuthentication = false,
                 RequiredConditionalAccessAuthenticationContext = id,
                 RequireJustification = true,
                 RequireApproval = false
