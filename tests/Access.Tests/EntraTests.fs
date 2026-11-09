@@ -5,15 +5,18 @@ open Expecto
 open Platform.Access
 open Platform.Access.Desired
 
-let private rules =
+let private rulesWith activation =
     Entra.policyRules
         [ "lead@example.com" ]
         {
             role = GlobalAdministrator
             maxHours = 1
+            activation = activation
             eligible = []
         }
     |> List.map (fun (id, body) -> id, JsonDocument.Parse(body).RootElement)
+
+let private rules = rulesWith Mfa
 
 let private rule id =
     rules |> List.find (fst >> (=) id) |> snd
@@ -31,6 +34,7 @@ let tests =
                     [
                         "Expiration_EndUser_Assignment"
                         "Enablement_EndUser_Assignment"
+                        "AuthenticationContext_EndUser_Assignment"
                         "Expiration_Admin_Eligibility"
                         "Expiration_Admin_Assignment"
                         "Enablement_Admin_Assignment"
@@ -75,6 +79,42 @@ let tests =
                     let r = rule id
                     Expect.equal (text "notificationLevel" r) "All" id
                     Expect.equal (text "notificationRecipients" r) """["lead@example.com"]""" id
+            }
+
+            test "while Conditional Access isn't on, activation uses PIM's MFA and no authentication context" {
+                Expect.equal (text "isEnabled" (rule "AuthenticationContext_EndUser_Assignment")) "False" "context off"
+
+                Expect.isFalse
+                    ((rule "AuthenticationContext_EndUser_Assignment").TryGetProperty "claimValue"
+                     |> fst)
+                    "no claim value sent"
+            }
+
+            test "with the authentication context, activation needs it instead of MFA, and it is switched on first" {
+                let ctx = rulesWith (AuthenticationContext "c1")
+
+                let activationRules =
+                    ctx
+                    |> List.map fst
+                    |> List.filter (fun id -> id.EndsWith "_EndUser_Assignment" && not (id.StartsWith "Notification"))
+
+                Expect.equal
+                    activationRules
+                    [
+                        "Expiration_EndUser_Assignment"
+                        "AuthenticationContext_EndUser_Assignment"
+                        "Enablement_EndUser_Assignment"
+                    ]
+                    "context before enablement"
+
+                let find id = ctx |> List.find (fst >> (=) id) |> snd
+                Expect.equal (text "claimValue" (find "AuthenticationContext_EndUser_Assignment")) "c1" "claim"
+                Expect.equal (text "isEnabled" (find "AuthenticationContext_EndUser_Assignment")) "True" "enabled"
+
+                Expect.equal
+                    (text "enabledRules" (find "Enablement_EndUser_Assignment"))
+                    """["Justification"]"""
+                    "justification only"
             }
 
             test "eligibility may be permanent" {

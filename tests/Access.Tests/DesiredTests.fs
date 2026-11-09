@@ -87,11 +87,95 @@ let tests =
 
             test "every Conditional Access policy excludes both emergency accounts" {
                 let policies = (planWith (Some ReportOnly)).conditionalAccess
-                Expect.hasLength policies 4 "four policies"
+                Expect.hasLength policies 7 "seven policies"
 
                 for p in policies do
                     Expect.equal p.state ReportOnly p.name
                     Expect.hasLength p.excludedUsers 2 p.name
+            }
+
+            test "PIM activation needs the authentication context only once Conditional Access is on" {
+                let activations caState =
+                    let plan = planWith caState
+
+                    (plan.pim |> List.map _.activation)
+                    @ (plan.directoryRoles |> List.map _.activation)
+                    |> List.distinct
+
+                Expect.equal (activations None) [ Mfa ] "off"
+                Expect.equal (activations (Some ReportOnly)) [ Mfa ] "report-only checks nothing"
+                Expect.equal (activations (Some Enforced)) [ AuthenticationContext "c1" ] "on"
+            }
+
+            test "sessions: a fresh sign-in for every activation, 4 h for Azure management, 12 h otherwise (D39)" {
+                let policies = (planWith (Some Enforced)).conditionalAccess
+
+                let find (prefix: string) =
+                    policies |> List.find (fun p -> p.name.StartsWith prefix)
+
+                Expect.equal (find "CA05").target (Context "c1") "CA05 targets the PIM context"
+
+                match (find "CA05").controls with
+                | GrantAndSession(RequireStrength _, { signIn = EveryTime }) -> ()
+                | other -> failtest $"CA05: %A{other}"
+
+                Expect.equal
+                    (find "CA06").controls
+                    (Session
+                        {
+                            signIn = Hours 4
+                            persistentBrowser = false
+                        })
+                    "CA06"
+
+                Expect.equal (find "CA06").users (Groups [ InfraDevelopers ]) "CA06 users"
+
+                Expect.equal
+                    (find "CA07").controls
+                    (Session
+                        {
+                            signIn = Hours 12
+                            persistentBrowser = true
+                        })
+                    "CA07"
+
+                Expect.equal (find "CA07").users (Groups [ InfraDevelopers; AppDevelopers ]) "CA07 users"
+            }
+
+            test "the CA05 Graph body targets the context and asks for phishing-resistant MFA every time" {
+                let ca05 =
+                    (planWith (Some ReportOnly)).conditionalAccess
+                    |> List.find (fun p -> p.name.StartsWith "CA05")
+
+                let body =
+                    System.Text.Json.JsonDocument.Parse(Entra.contextPolicyBody Map.empty "c1" ca05).RootElement
+
+                let at (path: string list) =
+                    path
+                    |> List.fold (fun (e: System.Text.Json.JsonElement) name -> e.GetProperty name) body
+
+                Expect.equal ((at [ "state" ]).GetString()) "enabledForReportingButNotEnforced" "report-only"
+
+                Expect.equal
+                    ((at [ "conditions"; "applications"; "includeAuthenticationContextClassReferences" ]).ToString())
+                    """["c1"]"""
+                    "context"
+
+                Expect.equal
+                    ((at [ "grantControls"; "authenticationStrength"; "id" ]).GetString())
+                    "00000000-0000-0000-0000-000000000004"
+                    "phishing-resistant"
+
+                Expect.equal
+                    ((at [ "sessionControls"; "signInFrequency"; "frequencyInterval" ]).GetString())
+                    "everyTime"
+                    "every time"
+
+                Expect.equal ((at [ "conditions"; "users"; "excludeUsers" ]).GetArrayLength()) 2 "emergency accounts"
+
+                Expect.isFalse
+                    (body.GetProperty("sessionControls").TryGetProperty "persistentBrowser" |> fst)
+                    "no browser mode"
             }
 
             test "the owner is never added as a collaborator" {

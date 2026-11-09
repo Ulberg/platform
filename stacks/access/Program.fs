@@ -25,8 +25,15 @@ let private run () =
         let peopleYaml =
             File.ReadAllText(Path.Combine(platformRoot, "access", "people.yaml"))
 
-        let policyScript =
-            File.ReadAllText(Path.Combine(platformRoot, "stacks", "access", "scripts", "pim-directory-role-policy.sh"))
+        let script name =
+            File.ReadAllText(Path.Combine(platformRoot, "stacks", "access", "scripts", name))
+
+        let scripts: Entra.Scripts =
+            {
+                pimDirectoryRolePolicy = script "pim-directory-role-policy.sh"
+                caContextPolicy = script "ca-context-policy.sh"
+                caContextPolicyDelete = script "ca-context-policy-delete.sh"
+            }
 
         let subscriptionId = Config("azure-native").Require "subscriptionId"
 
@@ -72,7 +79,7 @@ let private run () =
             | Error errors -> return fail errors
             | Ok() ->
                 // 3. Action
-                let entra = Entra.deploy policyScript plan
+                let entra = Entra.deploy scripts plan
                 let roles = AzureRbac.deploy subscriptionId entra.groups plan
                 let github = GitHub.deploy plan
 
@@ -82,7 +89,7 @@ let private run () =
                     + $"{entra.eligibilities.Length} PIM group eligibilities, "
                     + $"{entra.directoryRoleEligibilities.Length} PIM directory-role eligibilities "
                     + $"({entra.directoryRolePolicies.Length} PIM policies), {roles.Length} Azure role assignments, "
-                    + $"{entra.conditionalAccess.Length} Conditional Access policies, {github.rulesets.Length} rulesets, "
+                    + $"{entra.conditionalAccess.Length + entra.contextPolicies.Length} Conditional Access policies, {github.rulesets.Length} rulesets, "
                     + $"{github.collaborators.Length} collaborators, {github.environments.Length} environments"
                 )
 
