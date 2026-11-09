@@ -47,11 +47,11 @@ The script is safe to re-run. It creates:
 | `rg-platform-state` | Resource group for everything below |
 | `stplatform21784576` / `pulumi` | Pulumi state. ZRS, Entra-only auth (shared keys disabled), versioning + 30-day soft delete |
 | `kv-platform-21784576` / `pulumi` | RSA key for Pulumi secrets. RBAC mode, purge protection |
-| `id-platform-apply` | Managed identity, federated **only** with `repo:Ulberg/platform:environment:dev`. Contributor + RBAC Administrator on the subscription; Graph: groups, users, apps, PIM, Conditional Access |
-| `id-platform-preview` | Managed identity, federated **only** with `repo:Ulberg/platform:pull_request` and `repo:Ulberg/platform:ref:refs/heads/main` (the preview shown before an apply is approved). Reader + read-only Graph; write only on the state container (for preview lock files) |
+| `id-platform-apply` | Managed identity, federated **only** with `repo:Ulberg@83536945/platform@1450696781:environment:dev`. Contributor + RBAC Administrator on the subscription; Graph: groups, users, apps, PIM, Conditional Access |
+| `id-platform-preview` | Managed identity, federated **only** with `…/platform@1450696781:pull_request` and `…:ref:refs/heads/main` (the preview shown before an apply is approved). Reader + read-only Graph; write only on the state container (for preview lock files) |
 | GitHub variables | `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `AZURE_PREVIEW_CLIENT_ID`, `PULUMI_BACKEND_URL`, `PULUMI_SECRETS_PROVIDER`, and `AZURE_CLIENT_ID` in environment `dev` |
 
-There are no client secrets anywhere: both identities sign in with GitHub's OIDC token.
+GitHub's OIDC subject includes the owner and repo **IDs**, so a renamed or recreated repo with the same name can't get these tokens. There are no client secrets anywhere: both identities sign in with GitHub's OIDC token.
 
 **Be aware:** `id-platform-apply` can manage groups, apps, PIM and Conditional Access, which makes it effectively a tenant admin. The protection is that only a run in the `dev` environment, which needs a platform lead's approval and only deploys from `main`, can get a token for it.
 

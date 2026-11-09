@@ -25,6 +25,9 @@ az account set --subscription "$SUBSCRIPTION_ID"
 ME=$(az ad signed-in-user show --query id -o tsv)
 gh auth status >/dev/null
 SUB_SCOPE="/subscriptions/$SUBSCRIPTION_ID"
+# GitHub's OIDC subject carries immutable IDs (repo:<owner>@<owner-id>/<repo>@<repo-id>), so a renamed
+# or deleted-and-recreated repo with the same name can never get these identities' tokens.
+OIDC_REPO="repo:${GITHUB_REPO%%/*}@$(gh api "users/${GITHUB_REPO%%/*}" --jq .id)/${GITHUB_REPO##*/}@$(gh api "repos/$GITHUB_REPO" --jq .id)"
 
 assign_role() { # principal-id principal-type role scope
   local existing
@@ -94,10 +97,10 @@ create_identity() { # name federated-subject
 }
 
 federate() { # identity credential-name federated-subject
-  if ! az identity federated-credential show -n "$2" --identity-name "$1" -g "$STATE_RESOURCE_GROUP" -o none 2>/dev/null; then
-    az identity federated-credential create -n "$2" --identity-name "$1" -g "$STATE_RESOURCE_GROUP" \
-      --issuer https://token.actions.githubusercontent.com --subject "$3" --audiences api://AzureADTokenExchange -o none
-  fi
+  local action=create
+  az identity federated-credential show -n "$2" --identity-name "$1" -g "$STATE_RESOURCE_GROUP" -o none 2>/dev/null && action=update
+  az identity federated-credential "$action" -n "$2" --identity-name "$1" -g "$STATE_RESOURCE_GROUP" \
+    --issuer https://token.actions.githubusercontent.com --subject "$3" --audiences api://AzureADTokenExchange -o none
 }
 
 GRAPH_SP=$(az ad sp show --id 00000003-0000-0000-c000-000000000000 --query id -o tsv)
@@ -121,7 +124,7 @@ grant_graph() { # principal-id permission...
 }
 
 log "CI identity for approved apply runs ($APPLY_IDENTITY)"
-create_identity "$APPLY_IDENTITY" "repo:$GITHUB_REPO:environment:dev"
+create_identity "$APPLY_IDENTITY" "$OIDC_REPO:environment:dev"
 APPLY_PRINCIPAL=$(az identity show -n "$APPLY_IDENTITY" -g "$STATE_RESOURCE_GROUP" --query principalId -o tsv)
 APPLY_CLIENT=$(az identity show -n "$APPLY_IDENTITY" -g "$STATE_RESOURCE_GROUP" --query clientId -o tsv)
 assign_role "$APPLY_PRINCIPAL" ServicePrincipal Contributor "$SUB_SCOPE"
@@ -134,9 +137,9 @@ grant_graph "$APPLY_PRINCIPAL" \
   Policy.Read.All Policy.ReadWrite.ConditionalAccess
 
 log "CI identity for pull-request previews ($PREVIEW_IDENTITY)"
-create_identity "$PREVIEW_IDENTITY" "repo:$GITHUB_REPO:pull_request"
+create_identity "$PREVIEW_IDENTITY" "$OIDC_REPO:pull_request"
 # Also from pushes to main, so every apply is shown as a preview before a lead approves it.
-federate "$PREVIEW_IDENTITY" github-main "repo:$GITHUB_REPO:ref:refs/heads/main"
+federate "$PREVIEW_IDENTITY" github-main "$OIDC_REPO:ref:refs/heads/main"
 PREVIEW_PRINCIPAL=$(az identity show -n "$PREVIEW_IDENTITY" -g "$STATE_RESOURCE_GROUP" --query principalId -o tsv)
 PREVIEW_CLIENT=$(az identity show -n "$PREVIEW_IDENTITY" -g "$STATE_RESOURCE_GROUP" --query clientId -o tsv)
 assign_role "$PREVIEW_PRINCIPAL" ServicePrincipal Reader "$SUB_SCOPE"
@@ -162,8 +165,8 @@ log "Done"
 cat <<EOF
 Pulumi state:   azblob://$STATE_CONTAINER?storage_account=$STATE_STORAGE_ACCOUNT
 Secrets key:    azurekeyvault://$STATE_KEY_VAULT.vault.azure.net/keys/$SECRETS_KEY
-Apply identity:   $APPLY_CLIENT   (trusted only from repo:$GITHUB_REPO:environment:dev)
-Preview identity: $PREVIEW_CLIENT   (trusted only from repo:$GITHUB_REPO:pull_request and main)
+Apply identity:   $APPLY_CLIENT   (trusted only from $OIDC_REPO:environment:dev)
+Preview identity: $PREVIEW_CLIENT   (trusted only from $OIDC_REPO:pull_request and main)
 
 Note: the apply identity can manage groups, apps, PIM and Conditional Access in this tenant.
 Only an approved run in the 'dev' environment can sign in as it.
