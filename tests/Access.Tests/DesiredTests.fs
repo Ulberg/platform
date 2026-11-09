@@ -252,6 +252,13 @@ let tests =
                 Expect.equal plan.tenantDomain "example.onmicrosoft.com" "user names live in the tenant domain"
             }
 
+            test "Entra ID P2 goes to infra developers (PIM) and agents (D41), by group" {
+                Expect.equal
+                    ((planWith None).licences |> List.map (fun l -> l.group, l.licence))
+                    [ InfraDevelopers, EntraIdP2; PlatformAgents, EntraIdP2 ]
+                    "group licences"
+            }
+
             test "the owner is never added as a collaborator" {
                 let plan =
                     Desired.plan (github "Ann-GH") None alertEmails "example.onmicrosoft.com" (parsed valid)

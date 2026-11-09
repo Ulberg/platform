@@ -122,6 +122,25 @@ module DirectoryRole =
 /// A standing, read-only directory role for an agent account.
 type AgentDirectoryRole = { agent: Agent; role: DirectoryRole }
 
+// ---------------------------------------------------------------------------------------------
+// Licences (group-based: members get them while they are members)
+
+type Licence =
+    /// PIM, Conditional Access and Identity Protection.
+    | EntraIdP2
+
+module Licence =
+    let value =
+        function
+        | EntraIdP2 -> "entra-id-p2"
+
+    /// The licence's SKU ID, the same in every tenant.
+    let skuId =
+        function
+        | EntraIdP2 -> "84a661c4-e949-4bd2-a560-ed7766fcaf2b"
+
+type GroupLicence = { group: GroupName; licence: Licence }
+
 /// PIM for a directory role: eligible only, activated with `activation` + justification for at most `maxHours`.
 type DirectoryRolePim =
     {
@@ -397,6 +416,7 @@ type Plan =
         agents: Agent list
         agentDirectoryRoles: AgentDirectoryRole list
         tenantDomain: string
+        licences: GroupLicence list
     }
 
 let private memberships (access: Access) =
@@ -558,5 +578,17 @@ let plan
                             }
                     ]
                 tenantDomain = tenantDomain
+                // Infra developers need P2 for PIM; agents get the same Conditional Access as humans (D41).
+                licences =
+                    [
+                        {
+                            group = InfraDevelopers
+                            licence = EntraIdP2
+                        }
+                        {
+                            group = PlatformAgents
+                            licence = EntraIdP2
+                        }
+                    ]
             }
     }
