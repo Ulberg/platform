@@ -33,6 +33,8 @@ let private run () =
                 pimPolicyRules = script "pim-policy-rules.sh"
                 caContextPolicy = script "ca-context-policy.sh"
                 caContextPolicyDelete = script "ca-context-policy-delete.sh"
+                groupLicence = script "group-licence.sh"
+                groupLicenceDelete = script "group-licence-delete.sh"
             }
 
         let subscriptionId = Config("azure-native").Require "subscriptionId"

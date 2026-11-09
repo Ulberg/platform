@@ -26,6 +26,7 @@ type Deployed =
         /// Claude's agent accounts (D41) and their read-only directory roles.
         agents: User list
         agentDirectoryRoles: DirectoryRoleAssignment list
+        licences: Command list
         directoryRoleEligibilities: DirectoryRoleEligibilityScheduleRequest list
         conditionalAccess: ConditionalAccessPolicy list
         /// Conditional Access policies the azuread provider can't express (authentication-context targets).
@@ -38,6 +39,8 @@ type Scripts =
         pimPolicyRules: string
         caContextPolicy: string
         caContextPolicyDelete: string
+        groupLicence: string
+        groupLicenceDelete: string
     }
 
 // ---------------------------------------------------------------------------------------------
@@ -577,6 +580,27 @@ let private groupActivation
         CustomResourceOptions(DependsOn = inputList [ for r in (policy :> Resource) :: after -> input r ])
     )
 
+/// A licence on a group (group-based licensing), set by scripts/group-licence.sh on apply: members get it
+/// while they are members. The azuread provider has no resource for this. Removing it from the plan removes
+/// the licence from the group.
+let private groupLicence (scripts: Scripts) (groups: Map<GroupName, Group>) (l: GroupLicence) =
+    Command(
+        $"{GroupName.value l.group}-{Licence.value l.licence}",
+        CommandArgs(
+            Create = scripts.groupLicence,
+            Delete = scripts.groupLicenceDelete,
+            Interpreter = inputList [ input "/bin/bash"; input "-c" ],
+            Environment =
+                inputMap
+                    [
+                        "GROUP_ID", io groups[l.group].ObjectId
+                        "SKU_ID", input (Licence.skuId l.licence)
+                    ],
+            Triggers = inputList [ input (box scripts.groupLicence) ]
+        ),
+        CustomResourceOptions(DeleteBeforeReplace = true)
+    )
+
 /// A Conditional Access policy that targets an authentication context, plus the context itself, set by
 /// scripts/ca-context-policy.sh on apply. Deleting the resource deletes the policy (the context stays).
 let private contextPolicy
@@ -807,4 +831,5 @@ let deploy (scripts: Scripts) (plan: Plan) : Deployed =
         contextPolicies = contextCommands
         agents = agentUsers |> Map.toList |> List.map snd
         agentDirectoryRoles = plan.agentDirectoryRoles |> List.map (agentDirectoryRole agentUsers)
+        licences = plan.licences |> List.map (groupLicence scripts groups)
     }
