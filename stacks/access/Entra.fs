@@ -585,7 +585,14 @@ let private contextPolicy
     (after: Resource list)
     (contextId: string, p: CaPolicy)
     =
-    let body = groupIds.Apply(fun ids -> contextPolicyBody ids contextId p)
+    // Only a policy for groups waits for their IDs. Otherwise a new group (unknown ID in a preview) would
+    // make every context policy look changed.
+    let body =
+        match p.users with
+        | Groups _ -> groupIds.Apply(fun ids -> contextPolicyBody ids contextId p)
+        | AllUsers
+        | Members
+        | Guests -> Output.Create(contextPolicyBody Map.empty contextId p)
 
     Command(
         p.name,
@@ -602,8 +609,13 @@ let private contextPolicy
                     ],
             Triggers = inputList [ io (body.Apply box); input (box scripts.caContextPolicy) ]
         ),
-        // After the provider's policies: creating them all at once gets Graph to throttle.
-        CustomResourceOptions(DependsOn = inputList [ for r in after -> input r ])
+        CustomResourceOptions(
+            // After the provider's policies: creating them all at once gets Graph to throttle.
+            DependsOn = inputList [ for r in after -> input r ],
+            // The delete step removes the policy by name. Replacing create-first would let the old resource's
+            // delete remove the policy the new one just set, so a replace deletes first.
+            DeleteBeforeReplace = true
+        )
     )
 
 let private roleEligibility (policy: Command) (pim: DirectoryRolePim) (p: Person) =
