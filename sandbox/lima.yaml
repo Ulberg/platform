@@ -1,0 +1,33 @@
+# Claude's VM (D81): Lima's rootful Docker template, without any of the developer's folders. Its network is
+# confined from the host (sandbox/confine.mjs): Lima passes the proxy in (HTTP(S)_PROXY, NO_PROXY), and these
+# make Docker and git use it.
+base: template:docker-rootful
+vmType: vz
+cpus: 4
+memory: 10GiB
+disk: 60GiB
+# Nothing of the VM on the developer's ports (their own cluster uses 9875-9877).
+portForwards:
+  - { guestIP: "0.0.0.0", guestPortRange: [1, 65535], ignore: true }
+provision:
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -eu
+      mkdir -p /etc/systemd/system/docker.service.d
+      printf '[Service]\nEnvironmentFile=/etc/environment\n' >/etc/systemd/system/docker.service.d/proxy.conf
+      # On the first boot Docker is installed after this, and starts with it.
+      systemctl daemon-reload
+      if systemctl cat docker >/dev/null 2>&1; then systemctl restart docker; fi
+      # git asks the proxy without its credentials first, and is cut off; send them at once.
+      git config --system http.proxyAuthMethod basic
+      git config --system user.name "ulberg-claude[bot]"
+      git config --system user.email "358816865+ulberg-claude[bot]@users.noreply.github.com"
+      dpkg -s gh make jq >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq gh make jq; }
+  - mode: user
+    script: |
+      #!/bin/bash
+      set -eu
+      command -v claude >/dev/null || curl -fsSL https://claude.ai/install.sh | bash
+      # The repo's tools (D79), from its flake.
+      [ -e /nix ] || curl -fsSL https://nixos.org/nix/install | sh -s -- --daemon --yes

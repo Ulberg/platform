@@ -36,6 +36,10 @@ platform_snapshot="$state/gitops/platform"
 k() { kubectl --kubeconfig "$cli_kubeconfig" "$@"; }
 h() { helm --kubeconfig "$cli_kubeconfig" "$@"; }
 step() { printf '\n== %s\n' "$*"; }
+# Git refuses a repository another user owns, and the checkouts are the developer's while the CLI's image runs as
+# root (Docker Desktop hides that by showing shared files as root's; a Linux VM doesn't). Trusted: only the two repos
+# this run was given (its own snapshots are root's).
+git() { command git -c safe.directory="$app_repo" -c safe.directory="$platform_root" "$@"; }
 
 # The renderer, from its image (the same one Argo CD's plugin runs), reading the platform's snapshot and the app
 # repo read-only. Both are paths on the host, which the host's Docker can mount wherever the CLI runs.
@@ -91,6 +95,9 @@ read_plan() {
   plan=$(render plan /app-repo/platform.yaml /platform/environments/local.yaml)
   app=$(jq -r .app <<<"$plan")
   cluster=$app
+  # The CLI reaches the cluster's API by the node's name (join_kind), never through a proxy the machine may have.
+  export NO_PROXY="${NO_PROXY:+$NO_PROXY,}$cluster-control-plane"
+  export no_proxy=$NO_PROXY
 }
 
 # A source's files (NUL-separated) and where they come from: a checkout's tracked and new files, uncommitted
@@ -99,7 +106,7 @@ files_of() {
   if git -C "$1" rev-parse 2>/dev/null; then
     git -C "$1" ls-files -z -co --exclude-standard | while IFS= read -r -d '' f; do [ -e "$1/$f" ] && printf '%s\0' "$f"; done
   else
-    (cd "$1" && find . -type f ! -name release.env -print0)
+    (cd "$1" && find . -type f ! -name release.env ! -path './.git/*' -print0)
   fi
 }
 origin_of() {
@@ -318,6 +325,34 @@ SQL
     --dry-run=client -o yaml | k apply -f - >/dev/null
 }
 
+# When the developer's machine reaches the internet only through a proxy (Claude's sandbox, D81, or a company
+# proxy), the components that download from it (Argo CD's charts, Grafana's plugins) get it too: HTTPS only, so
+# the cluster's own traffic, which is plain HTTP, never goes there. Without a proxy there is no ConfigMap, and the
+# components' optional reference to it does nothing.
+egress_proxy() {
+  [ -n "${HTTPS_PROXY:-}" ] || return 0
+  local address=${HTTPS_PROXY#*://} ns
+  address=${address##*@} && address=${address%%/*}
+  [[ ${address%:*} =~ ^[0-9.]+$ ]] ||
+    { echo "The proxy must be given by IP address (it's allowed by address, D66): $address" >&2; exit 1; }
+  for ns in argocd observability; do
+    k create namespace "$ns" --dry-run=client -o yaml | k apply -f - >/dev/null
+    k -n "$ns" create configmap platform-proxy --from-literal=HTTPS_PROXY="$HTTPS_PROXY" \
+      --from-literal=NO_PROXY="${NO_PROXY:-}" --dry-run=client -o yaml | k apply -f - >/dev/null
+    # Their network rules allow the internet on 443 only; the proxy listens elsewhere.
+    k apply -f - >/dev/null <<EOF
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata: { name: platform-proxy, namespace: $ns }
+spec:
+  endpointSelector: {}
+  egress:
+    - toCIDR: [ ${address%:*}/32 ]
+      toPorts: [ { ports: [ { port: "${address##*:}", protocol: TCP } ] } ]
+EOF
+  done
+}
+
 up() {
   wait=10m
   mkdir -p "$state"
@@ -334,6 +369,7 @@ kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 networking:
   disableDefaultCNI: true # Cilium instead, which enforces network rules
+  apiServerPort: 9877 # fixed, next to the app and Grafana, so Claude's sandbox can be allowed exactly it (D80)
 nodes:
   - role: control-plane
     image: $KIND_NODE_IMAGE
@@ -407,6 +443,7 @@ EOF
   k -n gitops rollout status deployment/git --timeout=5m >/dev/null
 
   step "Argo CD and its root application (D67)"
+  egress_proxy
   # Installed from the package its digest pins (D65), checked here; Argo CD then manages it like any component.
   read -r repo chart version namespace digest <<<"$(render chart /platform argocd)"
   rm -rf "$state/charts" && mkdir -p "$state/charts"
@@ -468,6 +505,7 @@ sync() {
   renderer=$(build_renderer)
   read_plan
   join_kind
+  egress_proxy # its port may have changed
   if [ "$renderer" = changed ]; then
     load_renderer "$renderer_image" >/dev/null
     k -n argocd rollout restart deployment/argocd-repo-server >/dev/null

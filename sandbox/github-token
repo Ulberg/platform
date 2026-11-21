@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Prints Claude's GitHub app token (D52), minting a fresh one when it's about to expire. sandbox/confine.mjs
+# copies it into Claude's VM every 45 minutes (D81: the token lives in the VM, for at most an hour).
+set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+"$here/../scripts/claude-github-token.sh" >/dev/null
+GH_CONFIG_DIR="$HOME/.config/gh-claude" gh auth token

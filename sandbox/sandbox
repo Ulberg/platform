@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# Starts Claude in its sandbox (D76-D81): a Lima VM of its own on the developer's machine, run by them or by their
+# Claude.
+#
+#   sandbox <app repo>                 the app profile: that repo (e.g. todo), with `make up` inside
+#   sandbox platform [--app <repo>]    the platform profile, for infra developers only (access/people.yaml);
+#                                      with an app repo too, to try the platform in a cluster
+#
+# The VM is Claude's, not the developer's: none of their folders, keys or logins. Claude clones the repos from
+# GitHub inside, as Claude's GitHub app (D52), and its work leaves only as a pull request. Its only way out is an
+# allowlisting proxy (sandbox/confine.mjs, sandbox/allowlist.json). The VM and its cluster persist between
+# sessions; `limactl stop <name>` frees the memory.
+set -euo pipefail
+
+here=$(cd "$(dirname "$0")" && pwd)
+platform_root=$(cd "$here/.." && pwd)
+people="$platform_root/access/people.yaml"
+usage="usage: sandbox <app repo> | sandbox platform [--app <repo>]"
+target=${1:?$usage}
+
+# Whose Claude this is: its own Azure account (<name>-agent@<tenant>, D41), the one that also signs its GitHub
+# token, never the developer's login. The name must be in `agents`.
+account=$(az account show --query user.name -o tsv)
+person=${account%%-agent@*}
+[ "$person" != "$account" ] || { echo "$account isn't a Claude agent account (<name>-agent@...)" >&2; exit 1; }
+yq -e ".agents[] | select(. == \"$person\")" "$people" >/dev/null ||
+  { echo "$person has no Claude agent (agents in access/people.yaml)" >&2; exit 1; }
+
+if [ "$target" = platform ]; then
+  # The platform profile: only for infra developers (D77).
+  yq -e ".groups.infra-developers[] | select(. == \"$person\")" "$people" >/dev/null ||
+    { echo "$person isn't an infra developer (access/people.yaml), so no platform profile" >&2; exit 1; }
+  repos=(platform)
+  [ "${2:-}" = --app ] && repos+=("${3:?$usage}")
+else
+  repos=("$target")
+fi
+name="$person-agent-${repos[0]}"
+
+# The VM: created once, then started confined; confine.mjs lives as long as it does.
+(cd "$here" && npm ci --silent --ignore-scripts >/dev/null)
+limactl list -q | grep -qx "$name" ||
+  # --mount-none: the template's `mounts: []` doesn't remove the mounts of the template it builds on.
+  limactl create --name "$name" --mount-none --tty=false "$here/lima.yaml" >/dev/null
+if [ "$(limactl list "$name" --format '{{.Status}}')" != Running ]; then
+  echo "Starting $name (the first time about 5 minutes: Docker, Claude Code, Nix)" >&2
+  nohup node "$here/confine.mjs" "$name" >"$HOME/.lima/$name/confine.log" 2>&1 &
+  # Ready when Lima has run the template's setup (lima.yaml provision), not when SSH answers.
+  until limactl shell --workdir / "$name" -- test -e /run/lima-boot-done 2>/dev/null; do
+    kill -0 $! 2>/dev/null || { tail -5 "$HOME/.lima/$name/confine.log" >&2; exit 1; }
+    sleep 3
+  done
+fi
+vm() { limactl shell --workdir / "$name" -- bash -lc "$1"; }
+vm 'for tool in docker gh make claude nix; do command -v $tool >/dev/null || exit 1; done' || {
+  echo "$name's setup is incomplete (lima.yaml provision); its log:" >&2
+  vm 'sudo tail -15 /var/log/cloud-init-output.log' >&2
+  grep '^refused' "$HOME/.lima/$name/confine.log" | sort -u >&2
+  exit 1
+}
+
+# Claude's GitHub token (confine.mjs renews it), then the repos and their tools (D79).
+token=$("$here/github-token")
+printf 'github.com:\n    oauth_token: %s\n    git_protocol: https\n    user: ulberg-claude[bot]\n' "$token" |
+  vm 'mkdir -p ~/.config/gh && cat >~/.config/gh/hosts.yml && chmod 600 ~/.config/gh/hosts.yml && gh auth setup-git'
+for repo in "${repos[@]}"; do
+  vm "[ -d ~/$repo ] || git clone -q https://github.com/Ulberg-Org/$repo ~/$repo"
+  vm "[ ! -f ~/$repo/flake.nix ] || nix profile list | grep -q '$repo#' ||
+    nix --extra-experimental-features 'nix-command flakes' profile add ~/$repo#tools"
+done
+
+echo "Claude's sandbox $name is running: refused hosts are in ~/.lima/$name/confine.log" >&2
+# Attach when started from a terminal; Claude starting it for itself drives it with `limactl shell`.
+if [ -t 0 ]; then exec limactl shell --workdir "/home/$USER.guest/${repos[0]}" "$name" claude; fi

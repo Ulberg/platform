@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Checks that Claude's sandbox holds (D78, D81; Phase 2.5's "done when"): `sandbox/test <VM name>`. Each check
+# must fail inside the VM, as root where it says so: nothing of the developer's is there, and nothing outside the
+# allowlist is reachable.
+set -euo pipefail
+name=${1:?usage: sandbox/test <VM name>}
+here=$(cd "$(dirname "$0")" && pwd)
+lan=$(ipconfig getifaddr en0 2>/dev/null || echo 192.168.1.1)
+failed=0
+check() { # description, command that must FAIL inside the VM
+  if limactl shell --workdir / "$name" -- bash -lc "$2" >/dev/null 2>&1; then
+    echo "  FAIL  $1"; failed=1
+  else
+    echo "  ok    $1"
+  fi
+}
+direct='env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy'
+check "none of the developer's folders is mounted" 'ls -d /Users/* || grep -qE "virtiofs|9p" /proc/mounts'
+check "no SSH key or agent of the developer's" 'ls ~/.ssh/id_* || [ -n "${SSH_AUTH_SOCK:-}" ]'
+check "as root, no direct way out (HTTPS)" "sudo $direct curl -s -m 8 -o /dev/null https://github.com"
+check "as root, no direct way out (raw TCP to an IP)" 'sudo timeout 6 bash -c "exec 3<>/dev/tcp/1.1.1.1/443"'
+check "the proxy refuses hosts not on the allowlist" 'curl -sf -m 8 -o /dev/null https://example.com'
+check "the developer's Mac isn't reachable directly" "$direct curl -s -m 5 -o /dev/null http://host.lima.internal:9876"
+check "nor through the proxy" 'curl -sf -m 5 -o /dev/null http://host.lima.internal:9876'
+check "nor the LAN through the proxy" "curl -sf -m 5 -o /dev/null http://$lan"
+check "GitHub only as the app, never a person's account" 'gh api user'
+# From the host: the platform profile is refused to an agent whose developer isn't an infra developer (D77),
+# against a copy of access/people.yaml without any.
+fixture=$(mktemp -d); mkdir "$fixture/access"; cp -R "$here" "$fixture/sandbox"
+yq '.groups.infra-developers = []' "$here/../access/people.yaml" >"$fixture/access/people.yaml"
+refusal=$("$fixture/sandbox/sandbox" platform </dev/null 2>&1 || true)
+rm -rf "$fixture"
+if grep -q "isn't an infra developer" <<<"$refusal"; then
+  echo "  ok    the platform profile is refused to non-infra developers"
+else
+  echo "  FAIL  the platform profile is refused to non-infra developers"; failed=1
+fi
+exit $failed

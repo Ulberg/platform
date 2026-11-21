@@ -7,6 +7,9 @@ configs:
     # The CLI asks for a refresh after every change; this is the fallback.
     timeout.reconciliation: 60s
 repoServer:
+  # The machine's proxy for downloading charts, if it has one (the platform CLI's egress_proxy).
+  envFrom:
+    - configMapRef: { name: platform-proxy, optional: true }
   extraContainers:
     - name: platform
       image: platform/renderer:dev

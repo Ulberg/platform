@@ -3,3 +3,4 @@
 .prompts/.state/
 bin/
 obj/
+sandbox/node_modules/

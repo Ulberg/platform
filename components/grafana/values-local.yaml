@@ -9,6 +9,9 @@ service:
 persistence: { enabled: true, size: 1Gi }
 # One Grafana at a time on that disk (its database is a single file): replaced, not rolled.
 deploymentStrategy: { type: Recreate }
+# The machine's proxy for downloading plugins, if it has one (the platform CLI's egress_proxy).
+envFromConfigMaps:
+  - { name: platform-proxy, optional: true }
 adminUser: admin
 adminPassword: local-only-admin
 # So the links Grafana makes (and hands to mcp-grafana) point at its local address.

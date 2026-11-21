@@ -1,0 +1,7 @@
+{
+  "name": "claude-sandbox",
+  "private": true,
+  "type": "module",
+  "description": "Claude's sandbox (D81): srt's allowlisting proxy around a Lima VM",
+  "dependencies": { "@anthropic-ai/sandbox-runtime": "0.0.83" }
+}
