@@ -87,3 +87,17 @@ One-time setup, after the apply has created the agent account (direct links are 
 When Claude reports that the agent's session expired, repeat step 4 with the passkey (never the pass: a session started with a pass ends when the pass expires). That needs no admin role. The GitHub token renews itself through Claude.
 
 Tests: `.claude/hooks/test_agent_identity.py` (CI, both repos); `.github/scripts/check_agent_access.sh` (platform) compares each agent's real rights with the above on every PR, on main and nightly; `scripts/agent-smoke-test.sh` (platform) is the manual test Claude runs as the agent (reads work, writes are refused).
+
+## 6. How we work (every agent and person; the same in both repos)
+
+- **Grill, then build.** Every phase starts with a grilling round: questions with a recommended answer each, until nothing is assumed. The decisions go into `PLAN.md` before any code.
+- **Look up best practice first.** Before using a technology we haven't used, search for its current best practice and real end-to-end examples, and say in the PR which practice we chose.
+- **Supply chain.** A dependency needs 1M+ weekly downloads or an official source (the project's own org). Otherwise read its source at the pinned version first, and record the review in the platform repo's `docs/dependency-reviews.md`. Everything is pinned by content (D65).
+- **Least privilege, zero trust.** Every identity, pod, tool and sandbox gets only what it needs: deny by default, verify rather than assume.
+- **Least footprint.** Choose and configure for the smallest memory, storage and compute: the tools we download and run, local development, the cloud, and the code (simple and fast; no needless allocations; stack over heap where it matters).
+- **Red, green, refactor.** A failing test (or check) first, then make it pass, then a pass that makes the new code shorter without making it harder to read, before every PR.
+- **Fast feedback.** Check each fix the cheapest way that proves it (a unit test, `helm template`, `make sync`); run the slow path (a fresh `make up`) once per increment, in the background, one at a time. Timeouts are short and a failure prints its cause at once.
+- **Find the real cause.** Don't blame slow propagation, caches or flakiness until the evidence rules out everything else.
+- **One branch per piece of work.** Follow-up fixes go on the open PR's branch; no PRs stacked on unmerged ones.
+- **Merging.** Only after the code owner's approval and with every check green, read from the workflow run itself (a check list can show a finished job as pending). A new tool developers will use (a UI, a `make` command) gets tried locally by them first.
+- **Manual steps.** If tools can do a decided step, do it. When a person has to act, name the account and give the direct URL of the exact page.
