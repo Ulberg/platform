@@ -20,6 +20,11 @@ See `AGENTS.md` for the working rules and `Ulberg-Org/todo/PLAN.md` for the over
 | `stacks/access/` | Pulumi stack `main`: Entra groups (`platform-read` ⊃ `platform-write` ⊃ `platform-admin`), PIM for Groups, Conditional Access, Azure Reader, GitHub rulesets and environments, CODEOWNERS check |
 | `tests/` | Unit tests (Expecto) |
 
+## Tools
+
+`flake.nix` pins the tools for working on the platform (D79): `nix develop` gives developers the same versions as
+Claude's sandbox (platform profile). On macOS it uses your system's .NET 11 (`brew install dotnet`).
+
 ## The platform CLI (local development)
 
 `platform` runs an app locally the way it runs in Azure (D61, D67): a kind cluster where Argo CD deploys the
