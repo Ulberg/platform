@@ -7,6 +7,8 @@ configs:
     # The CLI asks for a refresh after every change; this is the fallback.
     timeout.reconciliation: 60s
 repoServer:
+  resources: { limits: { memory: 384Mi } }
+  env: [ { name: GOMEMLIMIT, value: 300MiB } ]
   extraContainers:
     - name: platform
       image: platform/renderer:dev
@@ -27,3 +29,10 @@ repoServer:
   volumes:
     - { name: argocd-cmp-cm, configMap: { name: argocd-cmp-cm } }
     - { name: cmp-tmp, emptyDir: {} }
+# Footprint (least memory, locally): a memory cap Go honours (GOMEMLIMIT, about 80% of the limit), so it gives memory back instead of keeping it.
+controller:
+  resources: { limits: { memory: 512Mi } }
+  env: [ { name: GOMEMLIMIT, value: 410MiB } ]
+server:
+  resources: { limits: { memory: 192Mi } }
+  env: [ { name: GOMEMLIMIT, value: 150MiB } ]

@@ -1,0 +1,5 @@
+# Footprint (least memory, locally): a memory cap Go honours (GOMEMLIMIT, about 80% of the limit), so it gives memory back instead of keeping it.
+tempo:
+  retention: 24h
+  resources: { limits: { memory: 384Mi } }
+  extraEnv: [ { name: GOMEMLIMIT, value: 300MiB } ]

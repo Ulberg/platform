@@ -1,6 +1,8 @@
 server:
   fullnameOverride: prometheus-server
   extraFlags:
+    # The chart's own (it's replaced, not merged): lets the config reloader apply changes.
+    - web.enable-lifecycle
     - web.enable-otlp-receiver
     - web.enable-remote-write-receiver
     # Exemplars: a sample request's trace ID on a metric, so a spike opens its trace (D71).
@@ -23,3 +25,14 @@ alertmanager: { enabled: false }
 prometheus-pushgateway: { enabled: false }
 kube-state-metrics: { enabled: true }
 prometheus-node-exporter: { enabled: true }
+# Footprint (least memory): only the series we use. The API server's own metrics (over half of all series) and
+# the kubelets' are off; cAdvisor keeps CPU, memory and restarts per container.
+scrapeConfigs:
+  kubernetes-api-servers: { enabled: false }
+  kubernetes-nodes: { enabled: false }
+  kubernetes-nodes-cadvisor:
+    post_relabel_configs: ""
+    metric_relabel_configs:
+      - source_labels: [ __name__ ]
+        action: keep
+        regex: container_cpu_usage_seconds_total|container_memory_working_set_bytes|container_network_(receive|transmit)_bytes_total

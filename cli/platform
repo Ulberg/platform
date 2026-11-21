@@ -347,6 +347,9 @@ nodes:
             - { name: audit-log-path, value: /var/log/kubernetes/audit/audit.log }
             - { name: audit-log-maxsize, value: "50" }
             - { name: audit-log-maxbackup, value: "2" }
+          # Footprint: a memory cap Go honours, so the API server gives memory back (it's the largest process).
+          extraEnvs:
+            - { name: GOMEMLIMIT, value: 700MiB }
           extraVolumes:
             - { name: audit-policy, hostPath: /etc/kubernetes/audit, mountPath: /etc/kubernetes/audit, readOnly: true, pathType: Directory }
             - { name: audit-log, hostPath: /var/log/kubernetes/audit, mountPath: /var/log/kubernetes/audit, pathType: DirectoryOrCreate }

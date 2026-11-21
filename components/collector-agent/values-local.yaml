@@ -33,3 +33,6 @@ config:
   service:
     pipelines:
       logs: { receivers: [ filelog, filelog/audit, filelog/network ], processors: [ k8sattributes, filter/own-logs, memory_limiter, batch ], exporters: [ otlp_grpc/collector ] }
+# Footprint: a memory cap the collector honours (GOMEMLIMIT from the limit).
+useGOMEMLIMIT: true
+resources: { limits: { memory: 192Mi } }

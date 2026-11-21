@@ -40,3 +40,6 @@ config:
       logs:
         receivers: [ otlp, filelog/postgres ]
       metrics: { receivers: [ otlp, postgresql ], processors: [ memory_limiter, resource, batch ], exporters: [ otlp_http/prometheus ] }
+# Footprint: a memory cap the collector honours (GOMEMLIMIT from the limit).
+useGOMEMLIMIT: true
+resources: { limits: { memory: 256Mi } }
